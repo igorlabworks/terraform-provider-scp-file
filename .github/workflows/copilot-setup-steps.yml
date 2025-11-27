@@ -1,0 +1,112 @@
+name: "Copilot Setup Steps"
+
+# Automatically run the setup steps when they are changed to allow for easy validation, and
+# allow manual testing through the repository's "Actions" tab
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+
+    # Set the permissions to the lowest permissions possible needed for your steps.
+    # Copilot will be given its own token for its operations.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Start SSH server container
+        run: |
+          docker run -d --name ssh-server \
+            -p 2222:2222 \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            -e TZ=Etc/UTC \
+            -e PASSWORD_ACCESS=true \
+            -e USER_PASSWORD=testpass \
+            -e USER_NAME=testuser \
+            --health-cmd "ss -tulpn | grep :2222" \
+            --health-interval 10s \
+            --health-timeout 5s \
+            --health-retries 5 \
+            linuxserver/openssh-server:latest
+
+          echo "SSH server container started"
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Terraform/OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: latest
+          tofu_wrapper: false
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Build provider
+        run: go build -v .
+
+      - name: Wait for SSH server to be ready
+        run: |
+          echo "Waiting for SSH server container to be healthy..."
+          max_attempts=30
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            health_status=$(docker inspect --format='{{.State.Health.Status}}' ssh-server 2>/dev/null || echo "starting")
+            if [ "$health_status" = "healthy" ]; then
+              echo "SSH server is healthy and ready"
+              exit 0
+            fi
+            if nc -z localhost 2222 2>/dev/null; then
+              echo "SSH port is accessible"
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts - Status: $health_status"
+            sleep 2
+          done
+          echo "SSH server failed to become ready"
+          docker logs ssh-server
+          exit 1
+
+      - name: Install sshpass for testing
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Set up SSH test environment
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/test_key -N ""
+          chmod 600 ~/.ssh/test_key
+          chmod 700 ~/.ssh
+
+          # Add SSH server host key to known_hosts to avoid interactive prompts
+          ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          echo "SSH test server is available at localhost:2222"
+          echo "Username: testuser"
+          echo "Password: testpass"
+          echo "SSH key: ~/.ssh/test_key"
+
+      - name: Verify SSH connectivity
+        run: |
+          # Test password authentication
+          sshpass -p testpass ssh -p 2222 -o StrictHostKeyChecking=no testuser@localhost "echo 'SSH connection successful'"
+
+      - name: Create test directory structure on SSH server
+        run: |
+          sshpass -p testpass ssh -p 2222 testuser@localhost "mkdir -p /config/test_upload /config/test_download"
+          sshpass -p testpass ssh -p 2222 testuser@localhost "echo 'test content' > /config/test_download/sample.txt"
