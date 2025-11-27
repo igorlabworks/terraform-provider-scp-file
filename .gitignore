@@ -1,0 +1,18 @@
+# Build artifacts
+terraform-provider-scp-file
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test cache
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# OS
+.DS_Store
+Thumbs.db
