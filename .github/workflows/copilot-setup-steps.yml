@@ -54,12 +54,6 @@ jobs:
           tofu_version: latest
           tofu_wrapper: false
 
-      - name: Download Go dependencies
-        run: go mod download
-
-      - name: Build provider
-        run: go build -v .
-
       - name: Wait for SSH server to be ready
         run: |
           echo "Waiting for SSH server container to be healthy..."
