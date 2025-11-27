@@ -28,6 +28,14 @@ func TestSCPSensitiveFile_Basic(t *testing.T) {
 				Config: testAccSCPSensitiveFileConfig(config, "This is some sensitive content", remotePath),
 				Check:  checkRemoteFileCreation(config, remotePath),
 			},
+			{
+				Config: testAccSCPSensitiveFileBase64ContentConfig(config, "VGhpcyBpcyBzb21lIGJhc2U2NCBjb250ZW50", remotePath),
+				Check:  checkRemoteFileCreation(config, remotePath),
+			},
+			{
+				Config: testAccSCPSensitiveFileDecodedBase64ContentConfig(config, "This is some base64 content", remotePath),
+				Check:  checkRemoteFileCreation(config, remotePath),
+			},
 		},
 		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
 	})
@@ -295,4 +303,19 @@ func testAccSCPSensitiveFileSourceConfig(config *scpProviderConfig, source, file
 		  source   = %[5]q
 		  filename = %[6]q
 		}`, config.Host, config.Port, config.User, config.Password, source, filename)
+}
+
+func testAccSCPSensitiveFileDecodedBase64ContentConfig(config *scpProviderConfig, content, filename string) string {
+	return fmt.Sprintf(`
+		provider "scp" {
+		  host     = %[1]q
+		  port     = %[2]d
+		  user     = %[3]q
+		  password = %[4]q
+		}
+
+		resource "scp_sensitive_file" "test" {
+		  content_base64 = base64encode(%[5]q)
+		  filename       = %[6]q
+		}`, config.Host, config.Port, config.User, config.Password, content, filename)
 }
