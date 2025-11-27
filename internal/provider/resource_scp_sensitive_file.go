@@ -263,6 +263,9 @@ func (r *scpSensitiveFileResource) Read(ctx context.Context, req resource.ReadRe
 }
 
 func (r *scpSensitiveFileResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	// All mutable attributes have RequiresReplace() plan modifiers, so this method
+	// should never be called. If it is called, we simply copy the plan to state
+	// since the only attributes that could change are computed outputs.
 	var plan scpSensitiveFileResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -296,13 +297,8 @@ func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error
 	}
 	defer f.Close()
 
-	stat, err := f.Stat()
+	content, err := io.ReadAll(f)
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat remote file %s: %w", remotePath, err)
-	}
-
-	content := make([]byte, stat.Size())
-	if _, err := f.Read(content); err != nil {
 		return nil, fmt.Errorf("failed to read remote file %s: %w", remotePath, err)
 	}
 

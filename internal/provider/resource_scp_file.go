@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 
@@ -285,6 +284,9 @@ func (r *scpFileResource) Read(ctx context.Context, req resource.ReadRequest, re
 }
 
 func (r *scpFileResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	// All mutable attributes have RequiresReplace() plan modifiers, so this method
+	// should never be called. If it is called, we simply copy the plan to state
+	// since the only attributes that could change are computed outputs.
 	var plan scpFileResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -325,34 +327,6 @@ func parseSCPFileContent(plan scpFileResourceModel) ([]byte, error) {
 
 	content := plan.Content.ValueString()
 	return []byte(content), nil
-}
-
-// readRemoteFileContent reads the full content of a remote file efficiently
-func readRemoteFileContent(config *scpProviderConfig, remotePath string) ([]byte, error) {
-	sshConn, err := sshClient(config)
-	if err != nil {
-		return nil, err
-	}
-	defer sshConn.Close()
-
-	sftpConn, err := sftpClient(sshConn)
-	if err != nil {
-		return nil, err
-	}
-	defer sftpConn.Close()
-
-	f, err := sftpConn.Open(remotePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open remote file %s: %w", remotePath, err)
-	}
-	defer f.Close()
-
-	content, err := io.ReadAll(f)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read remote file %s: %w", remotePath, err)
-	}
-
-	return content, nil
 }
 
 type scpFileResourceModel struct {
