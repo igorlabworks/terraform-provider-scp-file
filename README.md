@@ -24,9 +24,9 @@ This Terraform provider enables managing files on remote hosts via SCP/SFTP. It 
 ### Building from Source
 
 ```bash
-git clone https://github.com/igorlabworks/terraform-provider-scp-file.git
-cd terraform-provider-scp-file
-go build -o terraform-provider-scp-file
+git clone https://github.com/igorlabworks/terraform-provider-scp.git
+cd terraform-provider-scp
+go build -o terraform-provider-scp
 ```
 
 ## Usage

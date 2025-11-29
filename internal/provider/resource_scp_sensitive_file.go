@@ -19,7 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/igorlabworks/terraform-provider-scp-file/internal/localtypes"
+	"github.com/igorlabworks/terraform-provider-scp/internal/localtypes"
 )
 
 var (

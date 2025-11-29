@@ -1,4 +1,4 @@
-module github.com/igorlabworks/terraform-provider-scp-file
+module github.com/igorlabworks/terraform-provider-scp
 
 go 1.24.0
 

@@ -16,7 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/igorlabworks/terraform-provider-scp-file/internal/remote"
+	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
 )
 
 var (

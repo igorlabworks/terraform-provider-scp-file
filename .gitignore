@@ -1,5 +1,5 @@
 # Build artifacts
-terraform-provider-scp-file
+terraform-provider-scp
 *.exe
 *.dll
 *.so

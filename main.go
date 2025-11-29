@@ -7,7 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 
-	"github.com/igorlabworks/terraform-provider-scp-file/internal/provider"
+	"github.com/igorlabworks/terraform-provider-scp/internal/provider"
 )
 
 func main() {
