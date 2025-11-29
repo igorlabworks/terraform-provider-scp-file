@@ -257,3 +257,126 @@ func TestHostKeyError(t *testing.T) {
 		t.Error("Unwrap should return the wrapped error")
 	}
 }
+
+func TestParseSSHConfigWithGlobalDefaults(t *testing.T) {
+	// Create a temporary SSH config file with global defaults
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config")
+
+	// This matches the user's actual SSH config structure
+	configContent := `AddKeysToAgent yes
+UseKeychain yes
+IdentityFile ~/.ssh/id_ed25519
+
+Host hephaestus
+  HostName 192.168.1.100
+  User igor
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	sshConfig, err := ParseSSHConfig(configPath)
+	if err != nil {
+		t.Fatalf("ParseSSHConfig failed: %v", err)
+	}
+
+	// Verify global defaults are parsed
+	if sshConfig.globalDefaults == nil {
+		t.Fatal("Expected globalDefaults to be set")
+	}
+
+	home, _ := os.UserHomeDir()
+	expectedKeyPath := filepath.Join(home, ".ssh", "id_ed25519")
+	if sshConfig.globalDefaults.IdentityFile != expectedKeyPath {
+		t.Errorf("Expected global IdentityFile '%s', got '%s'", expectedKeyPath, sshConfig.globalDefaults.IdentityFile)
+	}
+
+	// Test that host-specific entry is parsed
+	entry := sshConfig.GetEntry("hephaestus")
+	if entry == nil {
+		t.Fatal("Expected entry for 'hephaestus' but got nil")
+	}
+	if entry.Hostname != "192.168.1.100" {
+		t.Errorf("Expected Hostname '192.168.1.100', got '%s'", entry.Hostname)
+	}
+	if entry.User != "igor" {
+		t.Errorf("Expected User 'igor', got '%s'", entry.User)
+	}
+
+	// Test ApplyToConfig with global defaults
+	config := &Config{
+		Host: "hephaestus",
+	}
+
+	sshConfig.ApplyToConfig("hephaestus", config)
+
+	// Host should be updated to Hostname
+	if config.Host != "192.168.1.100" {
+		t.Errorf("Expected Host '192.168.1.100', got '%s'", config.Host)
+	}
+
+	// User should be set from host-specific entry
+	if config.User != "igor" {
+		t.Errorf("Expected User 'igor', got '%s'", config.User)
+	}
+
+	// KeyPath should be set from global default
+	if config.KeyPath != expectedKeyPath {
+		t.Errorf("Expected KeyPath '%s', got '%s'", expectedKeyPath, config.KeyPath)
+	}
+}
+
+func TestApplyToConfigGlobalDefaultsAndHostOverride(t *testing.T) {
+	// Create a temporary SSH config file
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config")
+
+	// Config with global defaults and host-specific overrides
+	configContent := `User globaluser
+IdentityFile ~/.ssh/global_key
+
+Host myserver
+    Hostname actual.server.com
+    User specificuser
+    IdentityFile ~/.ssh/specific_key
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	sshConfig, err := ParseSSHConfig(configPath)
+	if err != nil {
+		t.Fatalf("ParseSSHConfig failed: %v", err)
+	}
+
+	// Test with host-specific settings (should override global)
+	config := &Config{
+		Host: "myserver",
+	}
+	sshConfig.ApplyToConfig("myserver", config)
+
+	home, _ := os.UserHomeDir()
+	expectedKeyPath := filepath.Join(home, ".ssh", "specific_key")
+
+	if config.User != "specificuser" {
+		t.Errorf("Expected User 'specificuser' (host-specific), got '%s'", config.User)
+	}
+	if config.KeyPath != expectedKeyPath {
+		t.Errorf("Expected KeyPath '%s' (host-specific), got '%s'", expectedKeyPath, config.KeyPath)
+	}
+
+	// Test with unknown host (should use global defaults)
+	config2 := &Config{
+		Host: "unknownhost",
+	}
+	sshConfig.ApplyToConfig("unknownhost", config2)
+
+	expectedGlobalKeyPath := filepath.Join(home, ".ssh", "global_key")
+	if config2.User != "globaluser" {
+		t.Errorf("Expected User 'globaluser' (global default), got '%s'", config2.User)
+	}
+	if config2.KeyPath != expectedGlobalKeyPath {
+		t.Errorf("Expected KeyPath '%s' (global default), got '%s'", expectedGlobalKeyPath, config2.KeyPath)
+	}
+}

@@ -20,7 +20,8 @@ type SSHConfigEntry struct {
 
 // SSHConfig represents a parsed SSH config file.
 type SSHConfig struct {
-	entries map[string]*SSHConfigEntry
+	entries       map[string]*SSHConfigEntry
+	globalDefaults *SSHConfigEntry // Global defaults (options before any Host block)
 }
 
 // ParseSSHConfig parses the SSH config file at the given path.
@@ -53,9 +54,13 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 	}
 	defer file.Close()
 
-	config := &SSHConfig{entries: make(map[string]*SSHConfigEntry)}
+	config := &SSHConfig{
+		entries:       make(map[string]*SSHConfigEntry),
+		globalDefaults: &SSHConfigEntry{}, // Initialize global defaults
+	}
 	var currentEntry *SSHConfigEntry
 	var currentPatterns []string
+	inHostBlock := false // Track whether we're inside a Host block
 
 	scanner := bufio.NewScanner(file)
 	// Regular expression for parsing SSH config lines
@@ -93,32 +98,42 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 			// Start a new entry
 			currentPatterns = strings.Fields(value)
 			currentEntry = &SSHConfigEntry{Host: value}
+			inHostBlock = true
 
 		case "hostname":
-			if currentEntry != nil {
+			if inHostBlock && currentEntry != nil {
 				currentEntry.Hostname = value
 			}
 
 		case "user":
-			if currentEntry != nil {
+			if inHostBlock && currentEntry != nil {
 				currentEntry.User = value
+			} else if !inHostBlock {
+				// Global default
+				config.globalDefaults.User = value
 			}
 
 		case "port":
-			if currentEntry != nil {
+			if inHostBlock && currentEntry != nil {
 				currentEntry.Port = value
+			} else if !inHostBlock {
+				// Global default
+				config.globalDefaults.Port = value
 			}
 
 		case "identityfile":
-			if currentEntry != nil {
-				// Expand ~ in identity file path
-				if strings.HasPrefix(value, "~/") {
-					home, err := os.UserHomeDir()
-					if err == nil {
-						value = filepath.Join(home, value[2:])
-					}
+			// Expand ~ in identity file path
+			if strings.HasPrefix(value, "~/") {
+				home, err := os.UserHomeDir()
+				if err == nil {
+					value = filepath.Join(home, value[2:])
 				}
+			}
+			if inHostBlock && currentEntry != nil {
 				currentEntry.IdentityFile = value
+			} else if !inHostBlock {
+				// Global default
+				config.globalDefaults.IdentityFile = value
 			}
 		}
 	}
@@ -187,30 +202,54 @@ func matchPattern(pattern, host string) bool {
 }
 
 // ApplyToConfig applies SSH config settings to a remote.Config.
-// It follows OpenSSH precedence: explicit settings override config file settings.
+// It follows OpenSSH precedence: explicit settings override config file settings,
+// host-specific settings override global defaults.
 func (c *SSHConfig) ApplyToConfig(host string, config *Config) {
+	// Store the original values to track what was explicitly set
+	originalHost := config.Host
+	originalUser := config.User
+	originalPort := config.Port
+	originalKeyPath := config.KeyPath
+	
 	entry := c.GetEntry(host)
-	if entry == nil {
-		return
-	}
-
-	// Only apply if not already set (explicit settings take precedence)
-	if config.Host == host && entry.Hostname != "" {
-		config.Host = entry.Hostname
-	}
-
-	if config.User == "" && entry.User != "" {
-		config.User = entry.User
-	}
-
-	if config.Port == 0 && entry.Port != "" {
-		if port, err := parsePort(entry.Port); err == nil && port > 0 {
-			config.Port = port
+	
+	// First apply global defaults (lowest precedence)
+	// These only apply if no explicit value was provided
+	if c.globalDefaults != nil {
+		if originalUser == "" && c.globalDefaults.User != "" {
+			config.User = c.globalDefaults.User
+		}
+		if originalPort == 0 && c.globalDefaults.Port != "" {
+			if port, err := parsePort(c.globalDefaults.Port); err == nil && port > 0 {
+				config.Port = port
+			}
+		}
+		if originalKeyPath == "" && c.globalDefaults.IdentityFile != "" {
+			config.KeyPath = c.globalDefaults.IdentityFile
 		}
 	}
+	
+	// Then apply host-specific settings (higher precedence - overrides global defaults)
+	if entry != nil {
+		// Only apply Hostname if the host matches the original host alias
+		if originalHost == host && entry.Hostname != "" {
+			config.Host = entry.Hostname
+		}
 
-	if config.KeyPath == "" && entry.IdentityFile != "" {
-		config.KeyPath = entry.IdentityFile
+		// Host-specific settings override global defaults (but not explicit provider config)
+		if originalUser == "" && entry.User != "" {
+			config.User = entry.User
+		}
+
+		if originalPort == 0 && entry.Port != "" {
+			if port, err := parsePort(entry.Port); err == nil && port > 0 {
+				config.Port = port
+			}
+		}
+
+		if originalKeyPath == "" && entry.IdentityFile != "" {
+			config.KeyPath = entry.IdentityFile
+		}
 	}
 }
 
