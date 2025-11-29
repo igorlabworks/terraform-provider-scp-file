@@ -10,11 +10,14 @@ This Terraform provider enables managing files on remote hosts via SCP/SFTP. It 
 - **Multiple content sources**: Supports content, content_base64, sensitive_content, and source file
 - **File permissions**: Configure file and directory permissions
 - **Checksum attributes**: Provides MD5, SHA1, SHA256, and SHA512 checksums
+- **SSH config support**: Reads `~/.ssh/config` for User, Hostname, Port, and IdentityFile directives
+- **Host key verification**: Uses known_hosts file for host key verification with helpful error messages
+- **Multiple implementations**: Supports both SFTP (pkg/sftp) and rig (k0sproject/rig v2) implementations
 
 ## Requirements
 
 - [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.23 (for building from source)
+- [Go](https://golang.org/doc/install) >= 1.24 (for building from source)
 
 ## Installation
 
@@ -32,18 +35,87 @@ go build -o terraform-provider-scp-file
 
 ```hcl
 provider "scp" {
-  host     = "example.com"
-  port     = 22          # Optional, defaults to 22
-  user     = "username"
-  password = "password"  # Optional, conflicts with key_path
-  key_path = "~/.ssh/id_rsa"  # Optional, for key-based auth
+  host             = "example.com"      # Required: hostname, IP, or SSH config alias
+  port             = 22                 # Optional, defaults to 22
+  user             = "username"         # Optional, can be set via ~/.ssh/config
+  password         = "password"         # Optional, for password auth
+  key_path         = "~/.ssh/id_rsa"    # Optional, for key-based auth
+  ssh_config_path  = "~/.ssh/config"    # Optional, path to SSH config file
+  known_hosts_path = "~/.ssh/known_hosts" # Optional, path to known_hosts file
+  ignore_host_key  = false              # Optional, skip host key verification (insecure)
+  implementation   = "sftp"             # Optional, "sftp" (default) or "rig"
 }
 ```
 
-The provider supports multiple authentication methods:
+### Authentication Methods
+
+The provider supports multiple authentication methods (in order of precedence):
+
 1. **Password authentication**: Use the `password` attribute
 2. **SSH key authentication**: Use the `key_path` attribute
-3. **Default SSH keys**: If neither is specified, the provider will try default SSH keys from `~/.ssh/`
+3. **SSH config file**: Settings from `~/.ssh/config` (User, Hostname, Port, IdentityFile)
+4. **Default SSH keys**: If nothing is specified, tries keys from `~/.ssh/` in order:
+   - `id_ed25519`
+   - `id_ecdsa`
+   - `id_rsa`
+   - `id_dsa`
+
+### SSH Config Support
+
+The provider reads `~/.ssh/config` and supports the following directives:
+
+- `Host` - Pattern matching for host aliases
+- `Hostname` - The actual hostname to connect to
+- `User` - Username for authentication
+- `Port` - SSH port
+- `IdentityFile` - Path to SSH private key
+
+Example `~/.ssh/config`:
+```
+Host myserver
+    Hostname actual.server.com
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/deploy_key
+```
+
+Then in Terraform:
+```hcl
+provider "scp" {
+  host = "myserver"  # Uses settings from SSH config
+}
+```
+
+### Host Key Verification
+
+By default, the provider verifies host keys using the `~/.ssh/known_hosts` file. If the host key is not found or has changed, the provider will output a helpful error message with the line to add to your known_hosts file:
+
+```
+host key not found for example.com. To add this host, append this line to /home/user/.ssh/known_hosts:
+example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+```
+
+To disable host key verification (not recommended for production):
+```hcl
+provider "scp" {
+  host            = "example.com"
+  ignore_host_key = true
+}
+```
+
+### Implementation Selection
+
+The provider supports two implementations:
+
+- **sftp** (default): Uses `pkg/sftp` library. More lightweight and focused.
+- **rig**: Uses `k0sproject/rig v2` library. More comprehensive, supports additional features.
+
+```hcl
+provider "scp" {
+  host           = "example.com"
+  implementation = "rig"  # Use rig implementation
+}
+```
 
 ### Resources
 
@@ -151,6 +223,15 @@ Run acceptance tests (requires SSH server):
 ```bash
 TF_ACC=1 TEST_SSH_HOST=localhost TEST_SSH_PORT=22 TEST_SSH_USER=testuser TEST_SSH_PASSWORD=testpass go test -v ./internal/provider/...
 ```
+
+### Architecture
+
+The provider uses a pluggable remote client interface that allows different implementations:
+
+- `internal/remote/interface.go` - Defines the `Client` interface
+- `internal/remote/sftp.go` - SFTP implementation using pkg/sftp
+- `internal/remote/rig.go` - Rig implementation using k0sproject/rig v2
+- `internal/remote/sshconfig.go` - SSH config file parser
 
 ## License
 

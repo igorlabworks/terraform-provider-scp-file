@@ -124,12 +124,25 @@ func getTestSSHConfig() *scpProviderConfig {
 		password = "testpass"
 	}
 	keyPath := os.Getenv("TEST_SSH_KEY_PATH")
+	implementation := os.Getenv("TEST_SSH_IMPLEMENTATION")
+	if implementation == "" {
+		implementation = "sftp"
+	}
 
 	return &scpProviderConfig{
-		Host:     host,
-		Port:     port,
-		User:     user,
-		Password: password,
-		KeyPath:  keyPath,
+		Host:           host,
+		Port:           port,
+		User:           user,
+		Password:       password,
+		KeyPath:        keyPath,
+		IgnoreHostKey:  false,
+		Implementation: implementation,
 	}
+}
+
+// getTestSSHConfigWithImplementation returns a test config with a specific implementation
+func getTestSSHConfigWithImplementation(impl string) *scpProviderConfig {
+	config := getTestSSHConfig()
+	config.Implementation = impl
+	return config
 }

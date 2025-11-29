@@ -8,21 +8,15 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
-	"io"
-	"net"
 	"os"
-	"path/filepath"
-	"strconv"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/pkg/sftp"
-	"golang.org/x/crypto/ssh"
+
+	"github.com/igorlabworks/terraform-provider-scp-file/internal/remote"
 )
 
 var (
@@ -38,19 +32,27 @@ type scpProvider struct {
 }
 
 type scpProviderConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	KeyPath  string
+	Host           string
+	Port           int
+	User           string
+	Password       string
+	KeyPath        string
+	KnownHostsPath string
+	IgnoreHostKey  bool
+	SSHConfigPath  string
+	Implementation string
 }
 
 type scpProviderModel struct {
-	Host     types.String `tfsdk:"host"`
-	Port     types.Int64  `tfsdk:"port"`
-	User     types.String `tfsdk:"user"`
-	Password types.String `tfsdk:"password"`
-	KeyPath  types.String `tfsdk:"key_path"`
+	Host           types.String `tfsdk:"host"`
+	Port           types.Int64  `tfsdk:"port"`
+	User           types.String `tfsdk:"user"`
+	Password       types.String `tfsdk:"password"`
+	KeyPath        types.String `tfsdk:"key_path"`
+	KnownHostsPath types.String `tfsdk:"known_hosts_path"`
+	IgnoreHostKey  types.Bool   `tfsdk:"ignore_host_key"`
+	SSHConfigPath  types.String `tfsdk:"ssh_config_path"`
+	Implementation types.String `tfsdk:"implementation"`
 }
 
 func (p *scpProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -72,12 +74,22 @@ func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		port = int(config.Port.ValueInt64())
 	}
 
+	// Set default implementation
+	implementation := "sftp"
+	if !config.Implementation.IsNull() && !config.Implementation.IsUnknown() {
+		implementation = config.Implementation.ValueString()
+	}
+
 	p.config = &scpProviderConfig{
-		Host:     config.Host.ValueString(),
-		Port:     port,
-		User:     config.User.ValueString(),
-		Password: config.Password.ValueString(),
-		KeyPath:  config.KeyPath.ValueString(),
+		Host:           config.Host.ValueString(),
+		Port:           port,
+		User:           config.User.ValueString(),
+		Password:       config.Password.ValueString(),
+		KeyPath:        config.KeyPath.ValueString(),
+		KnownHostsPath: config.KnownHostsPath.ValueString(),
+		IgnoreHostKey:  config.IgnoreHostKey.ValueBool(),
+		SSHConfigPath:  config.SSHConfigPath.ValueString(),
+		Implementation: implementation,
 	}
 
 	resp.ResourceData = p.config
@@ -99,16 +111,19 @@ func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 		Description: "Provider for managing files on remote hosts via SCP/SFTP.",
 		Attributes: map[string]schema.Attribute{
 			"host": schema.StringAttribute{
-				Description: "The hostname or IP address of the remote SSH server.",
-				Required:    true,
+				Description: "The hostname or IP address of the remote SSH server. " +
+					"Can also be a host alias defined in ~/.ssh/config.",
+				Required: true,
 			},
 			"port": schema.Int64Attribute{
-				Description: "The port of the remote SSH server. Defaults to 22.",
-				Optional:    true,
+				Description: "The port of the remote SSH server. Defaults to 22. " +
+					"Can be overridden by ~/.ssh/config settings.",
+				Optional: true,
 			},
 			"user": schema.StringAttribute{
-				Description: "The username for SSH authentication.",
-				Required:    true,
+				Description: "The username for SSH authentication. " +
+					"Can be overridden by ~/.ssh/config settings.",
+				Optional: true,
 			},
 			"password": schema.StringAttribute{
 				Description: "The password for SSH authentication. Conflicts with key_path.",
@@ -117,7 +132,31 @@ func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 			},
 			"key_path": schema.StringAttribute{
 				Description: "The path to the SSH private key for authentication. " +
-					"If not specified, authentication is assumed to be configured in ~/.ssh/config.",
+					"Supports ~ expansion. Can be overridden by ~/.ssh/config IdentityFile directive. " +
+					"If not specified, default keys from ~/.ssh/ will be tried.",
+				Optional: true,
+			},
+			"known_hosts_path": schema.StringAttribute{
+				Description: "The path to the known_hosts file for host key verification. " +
+					"Defaults to ~/.ssh/known_hosts. Supports ~ expansion.",
+				Optional: true,
+			},
+			"ignore_host_key": schema.BoolAttribute{
+				Description: "If true, skip host key verification. " +
+					"WARNING: This is insecure and should only be used for testing. " +
+					"Defaults to false.",
+				Optional: true,
+			},
+			"ssh_config_path": schema.StringAttribute{
+				Description: "The path to the SSH config file. " +
+					"Defaults to ~/.ssh/config. Supports ~ expansion. " +
+					"The provider will read User, Hostname, Port, and IdentityFile directives.",
+				Optional: true,
+			},
+			"implementation": schema.StringAttribute{
+				Description: "The implementation to use for remote file operations. " +
+					"Valid values are 'sftp' (default) or 'rig'. " +
+					"The 'sftp' implementation uses pkg/sftp, while 'rig' uses k0sproject/rig v2.",
 				Optional: true,
 			},
 		},
@@ -153,202 +192,66 @@ func genFileChecksums(data []byte) fileChecksums {
 	return checksums
 }
 
-// sshClient creates an SSH client connection to the remote server
-func sshClient(config *scpProviderConfig) (*ssh.Client, error) {
-	var authMethods []ssh.AuthMethod
-
-	// Try password authentication first if provided
-	if config.Password != "" {
-		authMethods = append(authMethods, ssh.Password(config.Password))
+// toRemoteConfig converts the provider config to a remote.Config.
+func (c *scpProviderConfig) toRemoteConfig() *remote.Config {
+	return &remote.Config{
+		Host:           c.Host,
+		Port:           c.Port,
+		User:           c.User,
+		Password:       c.Password,
+		KeyPath:        c.KeyPath,
+		KnownHostsPath: c.KnownHostsPath,
+		IgnoreHostKey:  c.IgnoreHostKey,
+		SSHConfigPath:  c.SSHConfigPath,
+		Implementation: c.Implementation,
 	}
-
-	// Try key-based authentication if key_path is provided
-	if config.KeyPath != "" {
-		keyPath := config.KeyPath
-		// Expand ~ to home directory
-		if len(keyPath) >= 2 && keyPath[:2] == "~/" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil, fmt.Errorf("failed to get home directory: %w", err)
-			}
-			keyPath = filepath.Join(home, keyPath[2:])
-		}
-
-		key, err := os.ReadFile(keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read SSH key from %s: %w", keyPath, err)
-		}
-
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse SSH key: %w", err)
-		}
-
-		authMethods = append(authMethods, ssh.PublicKeys(signer))
-	}
-
-	// If no explicit auth methods, try default SSH agent or keys from ~/.ssh
-	if len(authMethods) == 0 {
-		// Try default keys
-		defaultKeys := []string{"id_rsa", "id_ecdsa", "id_ed25519"}
-		home, err := os.UserHomeDir()
-		if err == nil {
-			for _, keyName := range defaultKeys {
-				keyPath := filepath.Join(home, ".ssh", keyName)
-				key, err := os.ReadFile(keyPath)
-				if err != nil {
-					continue
-				}
-				signer, err := ssh.ParsePrivateKey(key)
-				if err != nil {
-					continue
-				}
-				authMethods = append(authMethods, ssh.PublicKeys(signer))
-				break
-			}
-		}
-	}
-
-	if len(authMethods) == 0 {
-		return nil, fmt.Errorf("no SSH authentication methods available")
-	}
-
-	sshConfig := &ssh.ClientConfig{
-		User:            config.User,
-		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // For simplicity; in production, use proper host key verification
-		Timeout:         30 * time.Second,
-	}
-
-	addr := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
-	client, err := ssh.Dial("tcp", addr, sshConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to SSH server %s: %w", addr, err)
-	}
-
-	return client, nil
 }
 
-// sftpClient creates an SFTP client from an SSH client
-func sftpClient(sshClient *ssh.Client) (*sftp.Client, error) {
-	client, err := sftp.NewClient(sshClient)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create SFTP client: %w", err)
-	}
-	return client, nil
+// createRemoteClient creates a new remote client using the provider configuration.
+func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
+	return remote.NewClient(config.toRemoteConfig())
 }
 
-// writeRemoteFile writes content to a remote file via SFTP
-func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode os.FileMode, dirMode os.FileMode) error {
-	ssh, err := sshClient(config)
+// writeRemoteFile writes content to a remote file using the remote client interface.
+func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) error {
+	client, err := createRemoteClient(config)
 	if err != nil {
 		return err
 	}
-	defer ssh.Close()
+	defer client.Close()
 
-	sftp, err := sftpClient(ssh)
-	if err != nil {
-		return err
-	}
-	defer sftp.Close()
-
-	// Create parent directories if they don't exist
-	dir := filepath.Dir(remotePath)
-	if err := sftp.MkdirAll(dir); err != nil {
-		return fmt.Errorf("failed to create remote directory %s: %w", dir, err)
-	}
-
-	// Write the file
-	f, err := sftp.Create(remotePath)
-	if err != nil {
-		return fmt.Errorf("failed to create remote file %s: %w", remotePath, err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(content); err != nil {
-		return fmt.Errorf("failed to write to remote file %s: %w", remotePath, err)
-	}
-
-	// Set file permissions
-	if err := sftp.Chmod(remotePath, fileMode); err != nil {
-		return fmt.Errorf("failed to set permissions on remote file %s: %w", remotePath, err)
-	}
-
-	return nil
+	return client.WriteFile(remotePath, content, fileMode, dirMode)
 }
 
-// readRemoteFile reads content from a remote file via SFTP
+// readRemoteFile reads content from a remote file using the remote client interface.
 func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error) {
-	ssh, err := sshClient(config)
+	client, err := createRemoteClient(config)
 	if err != nil {
 		return nil, err
 	}
-	defer ssh.Close()
+	defer client.Close()
 
-	sftp, err := sftpClient(ssh)
-	if err != nil {
-		return nil, err
-	}
-	defer sftp.Close()
-
-	f, err := sftp.Open(remotePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open remote file %s: %w", remotePath, err)
-	}
-	defer f.Close()
-
-	content, err := io.ReadAll(f)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read remote file %s: %w", remotePath, err)
-	}
-
-	return content, nil
+	return client.ReadFile(remotePath)
 }
 
-// remoteFileExists checks if a remote file exists
+// remoteFileExists checks if a remote file exists using the remote client interface.
 func remoteFileExists(config *scpProviderConfig, remotePath string) (bool, error) {
-	ssh, err := sshClient(config)
+	client, err := createRemoteClient(config)
 	if err != nil {
 		return false, err
 	}
-	defer ssh.Close()
+	defer client.Close()
 
-	sftp, err := sftpClient(ssh)
-	if err != nil {
-		return false, err
-	}
-	defer sftp.Close()
-
-	_, err = sftp.Stat(remotePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
+	return client.FileExists(remotePath)
 }
 
-// deleteRemoteFile deletes a remote file via SFTP
+// deleteRemoteFile deletes a remote file using the remote client interface.
 func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
-	ssh, err := sshClient(config)
+	client, err := createRemoteClient(config)
 	if err != nil {
 		return err
 	}
-	defer ssh.Close()
+	defer client.Close()
 
-	sftp, err := sftpClient(ssh)
-	if err != nil {
-		return err
-	}
-	defer sftp.Close()
-
-	if err := sftp.Remove(remotePath); err != nil {
-		// Ignore error if file doesn't exist
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to delete remote file %s: %w", remotePath, err)
-		}
-	}
-
-	return nil
+	return client.DeleteFile(remotePath)
 }
