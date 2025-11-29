@@ -24,11 +24,9 @@ type SFTPClient struct {
 // NewSFTPClient creates a new SFTP client with the given configuration.
 func NewSFTPClient(config *Config) (*SFTPClient, error) {
 	// Apply SSH config file settings
-	if config.SSHConfigPath != "" || config.Host != "" {
-		sshConfig, err := ParseSSHConfig(config.SSHConfigPath)
-		if err == nil {
-			sshConfig.ApplyToConfig(config.Host, config)
-		}
+	sshConfig, err := ParseSSHConfig(config.SSHConfigPath)
+	if err == nil {
+		sshConfig.ApplyToConfig(config.Host, config)
 	}
 
 	return &SFTPClient{config: config}, nil

@@ -3,13 +3,11 @@ package remote
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 
 	"github.com/k0sproject/rig/v2"
 	"github.com/k0sproject/rig/v2/protocol/ssh"
-	"github.com/skeema/knownhosts"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -22,11 +20,9 @@ type RigClient struct {
 // NewRigClient creates a new Rig client with the given configuration.
 func NewRigClient(config *Config) (*RigClient, error) {
 	// Apply SSH config file settings
-	if config.SSHConfigPath != "" || config.Host != "" {
-		sshConfig, err := ParseSSHConfig(config.SSHConfigPath)
-		if err == nil {
-			sshConfig.ApplyToConfig(config.Host, config)
-		}
+	sshConfig, err := ParseSSHConfig(config.SSHConfigPath)
+	if err == nil {
+		sshConfig.ApplyToConfig(config.Host, config)
 	}
 
 	return &RigClient{config: config}, nil
@@ -194,74 +190,4 @@ func (c *RigClient) DeleteFile(remotePath string) error {
 	}
 
 	return nil
-}
-
-// createHostKeyCallback creates the host key callback for SSH connections.
-// This is kept for reference but rig handles host key verification internally.
-func (c *RigClient) createHostKeyCallback() (gossh.HostKeyCallback, error) {
-	if c.config.IgnoreHostKey {
-		return gossh.InsecureIgnoreHostKey(), nil
-	}
-
-	// Determine known_hosts file path
-	knownHostsPath := c.config.KnownHostsPath
-	if knownHostsPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
-		}
-		knownHostsPath = filepath.Join(home, ".ssh", "known_hosts")
-	} else {
-		knownHostsPath = expandPath(knownHostsPath)
-	}
-
-	// Check if known_hosts file exists
-	if _, err := os.Stat(knownHostsPath); os.IsNotExist(err) {
-		// Create the directory if it doesn't exist
-		dir := filepath.Dir(knownHostsPath)
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return nil, fmt.Errorf("failed to create .ssh directory: %w", err)
-		}
-		// Create an empty known_hosts file
-		if err := os.WriteFile(knownHostsPath, []byte{}, 0600); err != nil {
-			return nil, fmt.Errorf("failed to create known_hosts file: %w", err)
-		}
-	}
-
-	// Use skeema/knownhosts for host key verification
-	kh, err := knownhosts.New(knownHostsPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse known_hosts: %w", err)
-	}
-
-	// Wrap the callback to provide helpful error messages
-	return func(hostname string, remote net.Addr, key gossh.PublicKey) error {
-		err := kh(hostname, remote, key)
-		if err != nil {
-			// Check if this is a key not found error
-			if knownhosts.IsHostKeyChanged(err) {
-				return &HostKeyError{
-					Host:           hostname,
-					KeyType:        key.Type(),
-					KeyFingerprint: gossh.FingerprintSHA256(key),
-					KnownHostsLine: knownhosts.Line([]string{hostname}, key),
-					Err:            fmt.Errorf("host key has changed for %s. This could indicate a man-in-the-middle attack. "+
-						"If you trust the new key, remove the old entry from %s and add this line:\n%s",
-						hostname, knownHostsPath, knownhosts.Line([]string{hostname}, key)),
-				}
-			}
-			if knownhosts.IsHostUnknown(err) {
-				return &HostKeyError{
-					Host:           hostname,
-					KeyType:        key.Type(),
-					KeyFingerprint: gossh.FingerprintSHA256(key),
-					KnownHostsLine: knownhosts.Line([]string{hostname}, key),
-					Err:            fmt.Errorf("host key not found for %s. To add this host, append this line to %s:\n%s",
-						hostname, knownHostsPath, knownhosts.Line([]string{hostname}, key)),
-				}
-			}
-			return err
-		}
-		return nil
-	}, nil
 }

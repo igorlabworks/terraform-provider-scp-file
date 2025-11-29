@@ -2,6 +2,7 @@ package remote
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -217,7 +218,7 @@ func parsePort(s string) (int, error) {
 	var port int
 	for _, c := range s {
 		if c < '0' || c > '9' {
-			return 0, nil
+			return 0, fmt.Errorf("invalid port: %s", s)
 		}
 		port = port*10 + int(c-'0')
 	}
