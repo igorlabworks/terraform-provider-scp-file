@@ -15,6 +15,15 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+const (
+	defaultSSHPort    = 22
+	defaultSSHTimeout = 30 * time.Second
+	sshDirPerm        = 0700
+	knownHostsPerm    = 0600
+)
+
+var defaultKeyNames = []string{"id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"}
+
 // SFTPClient implements the Client interface using the pkg/sftp library.
 type SFTPClient struct {
 	config     *Config
@@ -33,35 +42,27 @@ func NewSFTPClient(config *Config) (*SFTPClient, error) {
 	return &SFTPClient{config: config}, nil
 }
 
-// Connect establishes an SSH connection and creates an SFTP client.
 func (c *SFTPClient) Connect() error {
 	var authMethods []ssh.AuthMethod
 
-	// Try password authentication first if provided
 	if c.config.Password != "" {
 		authMethods = append(authMethods, ssh.Password(c.config.Password))
 	}
 
-	// Try SSH agent authentication
 	if agentAuth := c.loadSSHAgent(); agentAuth != nil {
 		authMethods = append(authMethods, agentAuth)
 	}
 
-	// Try key-based authentication if key_path is provided
 	if c.config.KeyPath != "" {
-		keyPath := expandPath(c.config.KeyPath)
-		key, err := os.ReadFile(keyPath)
+		key, err := os.ReadFile(expandPath(c.config.KeyPath))
 		if err == nil {
 			signer, err := ssh.ParsePrivateKey(key)
 			if err == nil {
 				authMethods = append(authMethods, ssh.PublicKeys(signer))
 			}
-			// If the key is passphrase-protected or can't be parsed, skip it.
-			// The SSH agent should handle passphrase-protected keys.
 		}
 	}
 
-	// If no explicit auth methods, try default SSH keys from ~/.ssh
 	if len(authMethods) == 0 {
 		authMethods = c.loadDefaultKeys()
 	}
@@ -80,7 +81,7 @@ func (c *SFTPClient) Connect() error {
 		User:            c.config.User,
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         30 * time.Second,
+		Timeout:         defaultSSHTimeout,
 		// Follow OpenSSH key algorithm precedence
 		HostKeyAlgorithms: []string{
 			ssh.KeyAlgoED25519,
@@ -96,7 +97,7 @@ func (c *SFTPClient) Connect() error {
 
 	port := c.config.Port
 	if port == 0 {
-		port = 22
+		port = defaultSSHPort
 	}
 
 	addr := net.JoinHostPort(c.config.Host, strconv.Itoa(port))
@@ -117,42 +118,25 @@ func (c *SFTPClient) Connect() error {
 	return nil
 }
 
-// Close closes the SFTP and SSH connections.
 func (c *SFTPClient) Close() error {
-	var errs []error
 	if c.sftpClient != nil {
-		if err := c.sftpClient.Close(); err != nil {
-			errs = append(errs, err)
-		}
+		c.sftpClient.Close()
 		c.sftpClient = nil
 	}
 	if c.sshClient != nil {
-		if err := c.sshClient.Close(); err != nil {
-			errs = append(errs, err)
-		}
+		err := c.sshClient.Close()
 		c.sshClient = nil
-	}
-	if len(errs) > 0 {
-		return fmt.Errorf("errors closing connections: %v", errs)
+		return err
 	}
 	return nil
 }
 
-// WriteFile writes content to a remote file via SFTP.
 func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.FileMode, dirMode os.FileMode) error {
-	if c.sftpClient == nil {
-		if err := c.Connect(); err != nil {
-			return err
-		}
-	}
-
-	// Create parent directories if they don't exist
 	dir := filepath.Dir(remotePath)
 	if err := c.sftpClient.MkdirAll(dir); err != nil {
 		return fmt.Errorf("failed to create remote directory %s: %w", dir, err)
 	}
 
-	// Write the file
 	f, err := c.sftpClient.Create(remotePath)
 	if err != nil {
 		return fmt.Errorf("failed to create remote file %s: %w", remotePath, err)
@@ -163,7 +147,6 @@ func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.Fi
 		return fmt.Errorf("failed to write to remote file %s: %w", remotePath, err)
 	}
 
-	// Set file permissions
 	if err := c.sftpClient.Chmod(remotePath, fileMode); err != nil {
 		return fmt.Errorf("failed to set permissions on remote file %s: %w", remotePath, err)
 	}
@@ -171,14 +154,7 @@ func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.Fi
 	return nil
 }
 
-// ReadFile reads content from a remote file via SFTP.
 func (c *SFTPClient) ReadFile(remotePath string) ([]byte, error) {
-	if c.sftpClient == nil {
-		if err := c.Connect(); err != nil {
-			return nil, err
-		}
-	}
-
 	f, err := c.sftpClient.Open(remotePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open remote file %s: %w", remotePath, err)
@@ -193,56 +169,26 @@ func (c *SFTPClient) ReadFile(remotePath string) ([]byte, error) {
 	return content, nil
 }
 
-// FileExists checks if a remote file exists.
 func (c *SFTPClient) FileExists(remotePath string) (bool, error) {
-	if c.sftpClient == nil {
-		if err := c.Connect(); err != nil {
-			return false, err
-		}
-	}
-
 	_, err := c.sftpClient.Stat(remotePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
+	return err == nil, nil
 }
 
-// DeleteFile deletes a remote file via SFTP.
 func (c *SFTPClient) DeleteFile(remotePath string) error {
-	if c.sftpClient == nil {
-		if err := c.Connect(); err != nil {
-			return err
-		}
-	}
-
-	if err := c.sftpClient.Remove(remotePath); err != nil {
-		// Ignore error if file doesn't exist
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to delete remote file %s: %w", remotePath, err)
-		}
-	}
-
+	c.sftpClient.Remove(remotePath)
 	return nil
 }
 
-// loadDefaultKeys tries to load default SSH keys from ~/.ssh
-// Note: This only loads unencrypted keys. Passphrase-protected keys should be
-// handled by the SSH agent.
+// Passphrase-protected keys should be handled by the SSH agent.
 func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {
 	var authMethods []ssh.AuthMethod
 
-	// OpenSSH key precedence order
-	defaultKeys := []string{"id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return authMethods
 	}
 
-	for _, keyName := range defaultKeys {
+	for _, keyName := range defaultKeyNames {
 		keyPath := filepath.Join(home, ".ssh", keyName)
 		key, err := os.ReadFile(keyPath)
 		if err != nil {
@@ -259,8 +205,6 @@ func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {
 	return authMethods
 }
 
-// loadSSHAgent attempts to connect to the SSH agent and returns an AuthMethod.
-// Returns nil if the SSH agent is not available.
 func (c *SFTPClient) loadSSHAgent() ssh.AuthMethod {
 	sshAuthSock := os.Getenv("SSH_AUTH_SOCK")
 	if sshAuthSock == "" {
@@ -276,8 +220,6 @@ func (c *SFTPClient) loadSSHAgent() ssh.AuthMethod {
 	return ssh.PublicKeysCallback(agentClient.Signers)
 }
 
-// createHostKeyCallback creates the host key callback for SSH connections.
-// It uses skeema/knownhosts for proper host key verification.
 func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 	if c.config.IgnoreHostKey {
 		return ssh.InsecureIgnoreHostKey(), nil
@@ -295,17 +237,12 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 		knownHostsPath = expandPath(knownHostsPath)
 	}
 
-	// Check if known_hosts file exists
-	if _, err := os.Stat(knownHostsPath); os.IsNotExist(err) {
-		// Create the directory if it doesn't exist
-		dir := filepath.Dir(knownHostsPath)
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return nil, fmt.Errorf("failed to create .ssh directory: %w", err)
-		}
-		// Create an empty known_hosts file
-		if err := os.WriteFile(knownHostsPath, []byte{}, 0600); err != nil {
-			return nil, fmt.Errorf("failed to create known_hosts file: %w", err)
-		}
+	dir := filepath.Dir(knownHostsPath)
+	if err := os.MkdirAll(dir, sshDirPerm); err != nil {
+		return nil, fmt.Errorf("failed to create .ssh directory: %w", err)
+	}
+	if err := os.WriteFile(knownHostsPath, []byte{}, knownHostsPerm); err != nil && !os.IsExist(err) {
+		return nil, fmt.Errorf("failed to create known_hosts file: %w", err)
 	}
 
 	// Use skeema/knownhosts for host key verification
@@ -328,7 +265,7 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 					KeyType:        key.Type(),
 					KeyFingerprint: fingerprint,
 					KnownHostsLine: keyLine,
-					Err:            fmt.Errorf("host key has changed for %s. This could indicate a man-in-the-middle attack.\n"+
+					Err: fmt.Errorf("host key has changed for %s. This could indicate a man-in-the-middle attack.\n"+
 						"Server presented key:\n"+
 						"  Type: %s\n"+
 						"  Fingerprint: %s\n"+
@@ -343,7 +280,7 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 					KeyType:        key.Type(),
 					KeyFingerprint: fingerprint,
 					KnownHostsLine: keyLine,
-					Err:            fmt.Errorf("host key not found for %s.\n"+
+					Err: fmt.Errorf("host key not found for %s.\n"+
 						"Server presented key:\n"+
 						"  Type: %s\n"+
 						"  Fingerprint: %s\n"+
@@ -358,7 +295,6 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 	}, nil
 }
 
-// expandPath expands ~ to the home directory in a path.
 func expandPath(path string) string {
 	if len(path) >= 2 && path[:2] == "~/" {
 		home, err := os.UserHomeDir()

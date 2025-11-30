@@ -13,7 +13,6 @@ import (
 )
 
 func TestSCPFile_Basic(t *testing.T) {
-	// Skip if not in acceptance test mode
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
@@ -46,7 +45,6 @@ func TestSCPFile_Basic(t *testing.T) {
 }
 
 func TestSCPFile_Content(t *testing.T) {
-	// Skip if not in acceptance test mode
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
@@ -67,7 +65,6 @@ func TestSCPFile_Content(t *testing.T) {
 }
 
 func TestSCPFile_SensitiveContent(t *testing.T) {
-	// Skip if not in acceptance test mode
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
@@ -88,7 +85,6 @@ func TestSCPFile_SensitiveContent(t *testing.T) {
 }
 
 func TestSCPFile_Base64Content(t *testing.T) {
-	// Skip if not in acceptance test mode
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
@@ -109,7 +105,6 @@ func TestSCPFile_Base64Content(t *testing.T) {
 }
 
 func TestSCPFile_Source(t *testing.T) {
-	// Skip if not in acceptance test mode
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
@@ -139,7 +134,6 @@ func TestSCPFile_Source(t *testing.T) {
 }
 
 func TestSCPFile_Validators(t *testing.T) {
-	// Skip if not in acceptance test mode
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}

@@ -209,14 +209,13 @@ func (r *scpFileResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	destination := plan.Filename.ValueString()
-	filePerm := plan.FilePermission.ValueString()
-	dirPerm := plan.DirectoryPermission.ValueString()
-
-	fileMode, _ := strconv.ParseInt(filePerm, 8, 64)
-	dirMode, _ := strconv.ParseInt(dirPerm, 8, 64)
-
-	if err := writeRemoteFile(r.config, destination, content, os.FileMode(fileMode), os.FileMode(dirMode)); err != nil {
+	if err := writeRemoteFile(
+		r.config,
+		plan.Filename.ValueString(),
+		content,
+		parseFilePermissions(plan.FilePermission.ValueString()),
+		parseFilePermissions(plan.DirectoryPermission.ValueString()),
+	); err != nil {
 		resp.Diagnostics.AddError(
 			"Create SCP file error",
 			"An unexpected error occurred while writing the remote file\n\n"+
@@ -312,6 +311,11 @@ func (r *scpFileResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 }
 
+func parseFilePermissions(permStr string) os.FileMode {
+	perm, _ := strconv.ParseInt(permStr, 8, 64)
+	return os.FileMode(perm)
+}
+
 func parseSCPFileContent(plan scpFileResourceModel) ([]byte, error) {
 	if !plan.SensitiveContent.IsNull() && !plan.SensitiveContent.IsUnknown() {
 		return []byte(plan.SensitiveContent.ValueString()), nil
@@ -319,14 +323,10 @@ func parseSCPFileContent(plan scpFileResourceModel) ([]byte, error) {
 	if !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown() {
 		return base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
 	}
-
 	if !plan.Source.IsNull() && !plan.Source.IsUnknown() {
-		sourceFilePath := plan.Source.ValueString()
-		return os.ReadFile(sourceFilePath)
+		return os.ReadFile(plan.Source.ValueString())
 	}
-
-	content := plan.Content.ValueString()
-	return []byte(content), nil
+	return []byte(plan.Content.ValueString()), nil
 }
 
 type scpFileResourceModel struct {

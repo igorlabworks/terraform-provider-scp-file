@@ -19,6 +19,11 @@ import (
 	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
 )
 
+const (
+	defaultSSHPort        = 22
+	defaultImplementation = "sftp"
+)
+
 var (
 	_ provider.Provider = (*scpProvider)(nil)
 )
@@ -68,14 +73,12 @@ func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		return
 	}
 
-	// Set default port if not specified
-	port := 22
+	port := defaultSSHPort
 	if !config.Port.IsNull() && !config.Port.IsUnknown() {
 		port = int(config.Port.ValueInt64())
 	}
 
-	// Set default implementation
-	implementation := "sftp"
+	implementation := defaultImplementation
 	if !config.Implementation.IsNull() && !config.Implementation.IsUnknown() {
 		implementation = config.Implementation.ValueString()
 	}
@@ -220,6 +223,10 @@ func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byt
 	}
 	defer client.Close()
 
+	if err := client.Connect(); err != nil {
+		return err
+	}
+
 	return client.WriteFile(remotePath, content, fileMode, dirMode)
 }
 
@@ -230,6 +237,10 @@ func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error
 		return nil, err
 	}
 	defer client.Close()
+
+	if err := client.Connect(); err != nil {
+		return nil, err
+	}
 
 	return client.ReadFile(remotePath)
 }
@@ -242,6 +253,10 @@ func remoteFileExists(config *scpProviderConfig, remotePath string) (bool, error
 	}
 	defer client.Close()
 
+	if err := client.Connect(); err != nil {
+		return false, err
+	}
+
 	return client.FileExists(remotePath)
 }
 
@@ -252,6 +267,10 @@ func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
 		return err
 	}
 	defer client.Close()
+
+	if err := client.Connect(); err != nil {
+		return err
+	}
 
 	return client.DeleteFile(remotePath)
 }

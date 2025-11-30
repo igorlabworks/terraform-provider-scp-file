@@ -9,7 +9,6 @@ import (
 	"strings"
 )
 
-// SSHConfigEntry represents a parsed SSH config entry for a host.
 type SSHConfigEntry struct {
 	Host         string
 	Hostname     string
@@ -18,10 +17,9 @@ type SSHConfigEntry struct {
 	IdentityFile string
 }
 
-// SSHConfig represents a parsed SSH config file.
 type SSHConfig struct {
-	entries       map[string]*SSHConfigEntry
-	globalDefaults *SSHConfigEntry // Global defaults (options before any Host block)
+	entries        map[string]*SSHConfigEntry
+	globalDefaults *SSHConfigEntry
 }
 
 // ParseSSHConfig parses the SSH config file at the given path.
@@ -35,7 +33,6 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 		configPath = filepath.Join(home, ".ssh", "config")
 	}
 
-	// Expand ~ in path
 	if strings.HasPrefix(configPath, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -46,32 +43,25 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 
 	file, err := os.Open(configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// Return empty config if file doesn't exist
-			return &SSHConfig{entries: make(map[string]*SSHConfigEntry)}, nil
-		}
-		return nil, err
+		return &SSHConfig{entries: make(map[string]*SSHConfigEntry)}, nil
 	}
 	defer file.Close()
 
 	config := &SSHConfig{
-		entries:       make(map[string]*SSHConfigEntry),
-		globalDefaults: &SSHConfigEntry{}, // Initialize global defaults
+		entries:        make(map[string]*SSHConfigEntry),
+		globalDefaults: &SSHConfigEntry{},
 	}
 	var currentEntry *SSHConfigEntry
 	var currentPatterns []string
-	inHostBlock := false // Track whether we're inside a Host block
+	inHostBlock := false
 
 	scanner := bufio.NewScanner(file)
-	// Regular expression for parsing SSH config lines
-	// Matches: keyword value or keyword=value
 	lineRe := regexp.MustCompile(`^\s*(\w+)\s*[=\s]\s*(.+?)\s*$`)
 	commentRe := regexp.MustCompile(`^\s*(#.*)?$`)
 
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Skip comments and empty lines
 		if commentRe.MatchString(line) {
 			continue
 		}
@@ -84,18 +74,15 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 		keyword := strings.ToLower(matches[1])
 		value := matches[2]
 
-		// Remove surrounding quotes if present
 		value = strings.Trim(value, "\"'")
 
 		switch keyword {
 		case "host":
-			// Save the current entry before starting a new one
 			if currentEntry != nil {
 				for _, pattern := range currentPatterns {
 					config.entries[pattern] = currentEntry
 				}
 			}
-			// Start a new entry
 			currentPatterns = strings.Fields(value)
 			currentEntry = &SSHConfigEntry{Host: value}
 			inHostBlock = true
@@ -109,7 +96,6 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 			if inHostBlock && currentEntry != nil {
 				currentEntry.User = value
 			} else if !inHostBlock {
-				// Global default
 				config.globalDefaults.User = value
 			}
 
@@ -117,28 +103,19 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 			if inHostBlock && currentEntry != nil {
 				currentEntry.Port = value
 			} else if !inHostBlock {
-				// Global default
 				config.globalDefaults.Port = value
 			}
 
 		case "identityfile":
-			// Expand ~ in identity file path
-			if strings.HasPrefix(value, "~/") {
-				home, err := os.UserHomeDir()
-				if err == nil {
-					value = filepath.Join(home, value[2:])
-				}
-			}
+			value = expandPath(value)
 			if inHostBlock && currentEntry != nil {
 				currentEntry.IdentityFile = value
 			} else if !inHostBlock {
-				// Global default
 				config.globalDefaults.IdentityFile = value
 			}
 		}
 	}
 
-	// Save the last entry
 	if currentEntry != nil {
 		for _, pattern := range currentPatterns {
 			config.entries[pattern] = currentEntry
@@ -152,15 +129,11 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 	return config, nil
 }
 
-// GetEntry returns the SSH config entry for the given host.
-// It supports wildcard matching following OpenSSH precedence (first match wins).
 func (c *SSHConfig) GetEntry(host string) *SSHConfigEntry {
-	// First, try exact match
 	if entry, ok := c.entries[host]; ok {
 		return entry
 	}
 
-	// Then try pattern matching (OpenSSH uses first match)
 	for pattern, entry := range c.entries {
 		if matchPattern(pattern, host) {
 			return entry
@@ -170,14 +143,11 @@ func (c *SSHConfig) GetEntry(host string) *SSHConfigEntry {
 	return nil
 }
 
-// matchPattern checks if the host matches the SSH config pattern.
-// Supports * and ? wildcards as per OpenSSH spec.
 func matchPattern(pattern, host string) bool {
 	if pattern == "*" {
 		return true
 	}
 
-	// Convert SSH pattern to regexp
 	regexPattern := "^"
 	for _, char := range pattern {
 		switch char {
@@ -201,20 +171,14 @@ func matchPattern(pattern, host string) bool {
 	return re.MatchString(host)
 }
 
-// ApplyToConfig applies SSH config settings to a remote.Config.
-// It follows OpenSSH precedence: explicit settings override config file settings,
-// host-specific settings override global defaults.
 func (c *SSHConfig) ApplyToConfig(host string, config *Config) {
-	// Store the original values to track what was explicitly set
 	originalHost := config.Host
 	originalUser := config.User
 	originalPort := config.Port
 	originalKeyPath := config.KeyPath
-	
+
 	entry := c.GetEntry(host)
-	
-	// First apply global defaults (lowest precedence)
-	// These only apply if no explicit value was provided
+
 	if c.globalDefaults != nil {
 		if originalUser == "" && c.globalDefaults.User != "" {
 			config.User = c.globalDefaults.User
@@ -228,15 +192,12 @@ func (c *SSHConfig) ApplyToConfig(host string, config *Config) {
 			config.KeyPath = c.globalDefaults.IdentityFile
 		}
 	}
-	
-	// Then apply host-specific settings (higher precedence - overrides global defaults)
+
 	if entry != nil {
-		// Only apply Hostname if the host matches the original host alias
 		if originalHost == host && entry.Hostname != "" {
 			config.Host = entry.Hostname
 		}
 
-		// Host-specific settings override global defaults (but not explicit provider config)
 		if originalUser == "" && entry.User != "" {
 			config.User = entry.User
 		}

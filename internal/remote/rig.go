@@ -2,7 +2,6 @@ package remote
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +14,10 @@ import (
 	"github.com/skeema/knownhosts"
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+)
+
+const (
+	defaultRigTimeout = 5 * time.Second
 )
 
 // RigClient implements the Client interface using the k0sproject/rig library.
@@ -34,36 +37,28 @@ func NewRigClient(config *Config) (*RigClient, error) {
 	return &RigClient{config: config}, nil
 }
 
-// Connect establishes a connection using rig.
 func (c *RigClient) Connect() error {
 	port := c.config.Port
 	if port == 0 {
-		port = 22
+		port = defaultSSHPort
 	}
 
-	user := c.config.User
-	if user == "" {
-		user = "root"
-	}
-
-	// Build SSH config
 	sshConfig := ssh.Config{
 		Address: c.config.Host,
-		User:    user,
+		User:    c.config.User,
 		Port:    port,
 	}
 
-	// The rig library handles host key verification internally
-	// We need to configure it through other means
+	if c.config.User == "" {
+		sshConfig.User = "root"
+	}
 
-	// Set authentication methods
 	var authMethods []gossh.AuthMethod
 
 	if c.config.Password != "" {
 		authMethods = append(authMethods, gossh.Password(c.config.Password))
 	}
 
-	// Try SSH agent authentication
 	if agentAuth := loadSSHAgent(); agentAuth != nil {
 		authMethods = append(authMethods, agentAuth)
 	}
@@ -73,18 +68,13 @@ func (c *RigClient) Connect() error {
 		sshConfig.KeyPath = &keyPath
 	}
 
-	// If no explicit auth methods, try default SSH keys
 	if c.config.Password == "" && c.config.KeyPath == "" {
 		home, err := os.UserHomeDir()
 		if err == nil {
-			// OpenSSH key precedence order
-			defaultKeys := []string{"id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"}
-			for _, keyName := range defaultKeys {
+			for _, keyName := range defaultKeyNames {
 				keyPath := filepath.Join(home, ".ssh", keyName)
-				if _, err := os.Stat(keyPath); err == nil {
-					sshConfig.KeyPath = &keyPath
-					break
-				}
+				sshConfig.KeyPath = &keyPath
+				break
 			}
 		}
 	}
@@ -93,27 +83,24 @@ func (c *RigClient) Connect() error {
 		sshConfig.AuthMethods = authMethods
 	}
 
-	// Create the connection
 	conn, err := sshConfig.Connection()
 	if err != nil {
 		return fmt.Errorf("failed to create SSH connection config: %w", err)
 	}
 
-	// Create rig client
 	client, err := rig.NewClient(rig.WithConnection(conn))
 	if err != nil {
 		return fmt.Errorf("failed to create rig client: %w", err)
 	}
 
 	// Pre-verify host key using skeema/knownhosts before rig connects
-	// This ensures we support multiple key algorithms for the same host
+	// to ensure we support multiple key algorithms for the same host
 	if !c.config.IgnoreHostKey {
 		if err := c.verifyHostKey(c.config.Host, port); err != nil {
 			return err
 		}
 	}
 
-	// Connect to the remote host
 	ctx := context.Background()
 	if err := client.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect to SSH server %s:%d: %w", c.config.Host, port, err)
@@ -123,7 +110,6 @@ func (c *RigClient) Connect() error {
 	return nil
 }
 
-// Close closes the rig connection.
 func (c *RigClient) Close() error {
 	if c.client != nil {
 		c.client.Disconnect()
@@ -132,23 +118,14 @@ func (c *RigClient) Close() error {
 	return nil
 }
 
-// WriteFile writes content to a remote file using rig.
 func (c *RigClient) WriteFile(remotePath string, content []byte, fileMode os.FileMode, dirMode os.FileMode) error {
-	if c.client == nil {
-		if err := c.Connect(); err != nil {
-			return err
-		}
-	}
-
 	fsys := c.client.FS()
 
-	// Create parent directories if they don't exist
 	dir := filepath.Dir(remotePath)
 	if err := fsys.MkdirAll(dir, dirMode); err != nil {
 		return fmt.Errorf("failed to create remote directory %s: %w", dir, err)
 	}
 
-	// Write the file
 	if err := fsys.WriteFile(remotePath, content, fileMode); err != nil {
 		return fmt.Errorf("failed to write remote file %s: %w", remotePath, err)
 	}
@@ -156,14 +133,7 @@ func (c *RigClient) WriteFile(remotePath string, content []byte, fileMode os.Fil
 	return nil
 }
 
-// ReadFile reads content from a remote file using rig.
 func (c *RigClient) ReadFile(remotePath string) ([]byte, error) {
-	if c.client == nil {
-		if err := c.Connect(); err != nil {
-			return nil, err
-		}
-	}
-
 	fsys := c.client.FS()
 
 	content, err := fsys.ReadFile(remotePath)
@@ -174,48 +144,18 @@ func (c *RigClient) ReadFile(remotePath string) ([]byte, error) {
 	return content, nil
 }
 
-// FileExists checks if a remote file exists using rig.
 func (c *RigClient) FileExists(remotePath string) (bool, error) {
-	if c.client == nil {
-		if err := c.Connect(); err != nil {
-			return false, err
-		}
-	}
-
 	fsys := c.client.FS()
-
 	_, err := fsys.Stat(remotePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
+	return err == nil, nil
 }
 
-// DeleteFile deletes a remote file using rig.
 func (c *RigClient) DeleteFile(remotePath string) error {
-	if c.client == nil {
-		if err := c.Connect(); err != nil {
-			return err
-		}
-	}
-
 	fsys := c.client.FS()
-
-	if err := fsys.Remove(remotePath); err != nil {
-		// Ignore error if file doesn't exist
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to delete remote file %s: %w", remotePath, err)
-		}
-	}
-
+	fsys.Remove(remotePath)
 	return nil
 }
 
-// verifyHostKey pre-verifies the host key using skeema/knownhosts.
-// This allows us to support multiple key algorithms for the same host.
 func (c *RigClient) verifyHostKey(host string, port int) error {
 	// Determine known_hosts file path
 	knownHostsPath := c.config.KnownHostsPath
@@ -229,17 +169,12 @@ func (c *RigClient) verifyHostKey(host string, port int) error {
 		knownHostsPath = expandPath(knownHostsPath)
 	}
 
-	// Check if known_hosts file exists
-	if _, err := os.Stat(knownHostsPath); os.IsNotExist(err) {
-		// Create the directory if it doesn't exist
-		dir := filepath.Dir(knownHostsPath)
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return fmt.Errorf("failed to create .ssh directory: %w", err)
-		}
-		// Create an empty known_hosts file
-		if err := os.WriteFile(knownHostsPath, []byte{}, 0600); err != nil {
-			return fmt.Errorf("failed to create known_hosts file: %w", err)
-		}
+	dir := filepath.Dir(knownHostsPath)
+	if err := os.MkdirAll(dir, sshDirPerm); err != nil {
+		return fmt.Errorf("failed to create .ssh directory: %w", err)
+	}
+	if err := os.WriteFile(knownHostsPath, []byte{}, knownHostsPerm); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("failed to create known_hosts file: %w", err)
 	}
 
 	// Use skeema/knownhosts for host key verification
@@ -287,10 +222,9 @@ func (c *RigClient) verifyHostKey(host string, port int) error {
 			// Host key is valid - abort the connection since we only wanted to verify
 			return fmt.Errorf("host key verified")
 		},
-		Timeout: 5 * time.Second,
+		Timeout: defaultRigTimeout,
 	}
 
-	// Attempt connection - we expect it to fail after host key verification
 	client, err := gossh.Dial("tcp", addr, config)
 	if client != nil {
 		client.Close()
@@ -309,8 +243,6 @@ func (c *RigClient) verifyHostKey(host string, port int) error {
 	return nil
 }
 
-// loadSSHAgent attempts to connect to the SSH agent and returns an AuthMethod.
-// Returns nil if the SSH agent is not available.
 func loadSSHAgent() gossh.AuthMethod {
 	sshAuthSock := os.Getenv("SSH_AUTH_SOCK")
 	if sshAuthSock == "" {
@@ -336,59 +268,3 @@ func isHostKeyError(err error) bool {
 		strings.Contains(errStr, "knownhosts") ||
 		strings.Contains(errStr, "key mismatch")
 }
-
-// enhanceHostKeyError fetches the server's actual public key and enhances the error message.
-func enhanceHostKeyError(originalErr error, host string, port int) error {
-	// Try to fetch the server's public key by connecting with InsecureIgnoreHostKey
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-
-	// Create a simple SSH config that ignores host keys
-	config := &gossh.ClientConfig{
-		User:            "dummy", // We don't need to auth, just get the key
-		Auth:            []gossh.AuthMethod{},
-		HostKeyCallback: func(hostname string, remote net.Addr, key gossh.PublicKey) error {
-			// Capture the key and return an error to abort the connection
-			// We'll use a custom error that includes the key info
-			return &capturedKeyError{
-				hostname: hostname,
-				key:      key,
-			}
-		},
-		Timeout: 5 * time.Second,
-	}
-
-	client, err := gossh.Dial("tcp", addr, config)
-	if client != nil {
-		client.Close()
-	}
-
-	// Check if we captured the key
-	var capturedErr *capturedKeyError
-	if err != nil && errors.As(err, &capturedErr) {
-		keyLine := knownhosts.Line([]string{host}, capturedErr.key)
-		fingerprint := gossh.FingerprintSHA256(capturedErr.key)
-
-		return fmt.Errorf("%w\n"+
-			"Server presented key:\n"+
-			"  Hostname: %s\n"+
-			"  Type: %s\n"+
-			"  Fingerprint: %s\n"+
-			"  Key line: %s\n"+
-			"To accept this host, add the above key line to your ~/.ssh/known_hosts file.",
-			originalErr, capturedErr.hostname, capturedErr.key.Type(), fingerprint, keyLine)
-	}
-
-	// If we couldn't fetch the key, return the original error
-	return originalErr
-}
-
-// capturedKeyError is used to capture the server's public key during connection.
-type capturedKeyError struct {
-	hostname string
-	key      gossh.PublicKey
-}
-
-func (e *capturedKeyError) Error() string {
-	return "captured key"
-}
-

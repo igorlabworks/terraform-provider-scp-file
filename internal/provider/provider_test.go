@@ -53,8 +53,6 @@ func checkRemoteFileCreation(config *scpProviderConfig, remotePath string) resou
 
 func checkRemoteFilePermissions(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		// Note: Checking permissions on remote files would require additional SFTP operations
-		// For now, we just verify the file exists
 		exists, err := remoteFileExists(config, remotePath)
 		if err != nil {
 			return fmt.Errorf("error checking remote file: %s", err)
@@ -68,8 +66,6 @@ func checkRemoteFilePermissions(config *scpProviderConfig, remotePath string) re
 
 func checkRemoteDirectoryPermissions(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		// Note: Checking directory permissions would require additional SFTP operations
-		// For now, we just verify the parent directory exists by checking the file
 		exists, err := remoteFileExists(config, remotePath)
 		if err != nil {
 			return fmt.Errorf("error checking remote file: %s", err)
@@ -87,7 +83,6 @@ func createSourceFile(sourceFilePath, sourceContent string) error {
 
 func checkDirExists(destinationFilePath string, isDirExist *bool) func() {
 	return func() {
-		// if directory already existed prior to check, skip check
 		if _, err := os.Stat(path.Dir(destinationFilePath)); !os.IsNotExist(err) {
 			*isDirExist = true
 		}
@@ -97,15 +92,12 @@ func checkDirExists(destinationFilePath string, isDirExist *bool) func() {
 func skipTestsWindows() func() (bool, error) {
 	return func() (bool, error) {
 		if runtime.GOOS == "windows" {
-			// skip all checks if windows
 			return true, nil
 		}
 		return false, nil
 	}
 }
 
-// Test SSH configuration for integration tests
-// These values should be set via environment variables in the test environment
 func getTestSSHConfig() *scpProviderConfig {
 	host := os.Getenv("TEST_SSH_HOST")
 	if host == "" {

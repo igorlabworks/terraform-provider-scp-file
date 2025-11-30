@@ -7,7 +7,6 @@ import (
 )
 
 func TestParseSSHConfig(t *testing.T) {
-	// Create a temporary SSH config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
 
@@ -70,7 +69,6 @@ Host *
 }
 
 func TestParseSSHConfigMissing(t *testing.T) {
-	// Test with non-existent config file
 	config, err := ParseSSHConfig("/nonexistent/path/to/config")
 	if err != nil {
 		t.Fatalf("ParseSSHConfig should return empty config for missing file, got error: %v", err)
@@ -79,7 +77,6 @@ func TestParseSSHConfigMissing(t *testing.T) {
 		t.Fatal("Expected non-nil config")
 	}
 
-	// Should return nil for any host
 	entry := config.GetEntry("anyhost")
 	if entry != nil {
 		t.Error("Expected nil entry for empty config")
@@ -112,7 +109,6 @@ func TestMatchPattern(t *testing.T) {
 }
 
 func TestApplyToConfig(t *testing.T) {
-	// Create a temporary SSH config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
 
@@ -132,7 +128,6 @@ Host myserver
 		t.Fatalf("ParseSSHConfig failed: %v", err)
 	}
 
-	// Test that SSH config settings are applied to remote.Config
 	config := &Config{
 		Host: "myserver",
 		Port: 0,
@@ -141,22 +136,18 @@ Host myserver
 
 	sshConfig.ApplyToConfig("myserver", config)
 
-	// Host should be updated to Hostname
 	if config.Host != "actual.server.com" {
 		t.Errorf("Expected Host 'actual.server.com', got '%s'", config.Host)
 	}
 
-	// User should be set from SSH config
 	if config.User != "sshuser" {
 		t.Errorf("Expected User 'sshuser', got '%s'", config.User)
 	}
 
-	// Port should be set from SSH config
 	if config.Port != 2222 {
 		t.Errorf("Expected Port 2222, got %d", config.Port)
 	}
 
-	// Test that explicit settings take precedence
 	config2 := &Config{
 		Host: "myserver",
 		Port: 22,       // Explicit port
@@ -165,12 +156,10 @@ Host myserver
 
 	sshConfig.ApplyToConfig("myserver", config2)
 
-	// User should NOT be overridden (explicit takes precedence)
 	if config2.User != "myuser" {
 		t.Errorf("Expected User 'myuser' (explicit), got '%s'", config2.User)
 	}
 
-	// Port should NOT be overridden (explicit takes precedence)
 	if config2.Port != 22 {
 		t.Errorf("Expected Port 22 (explicit), got %d", config2.Port)
 	}
@@ -217,13 +206,11 @@ func TestNewClient(t *testing.T) {
 		t.Fatal("Expected non-nil client")
 	}
 
-	// Check it's an SFTP client
 	_, ok := client.(*SFTPClient)
 	if !ok {
 		t.Error("Expected *SFTPClient for default implementation")
 	}
 
-	// Test rig client creation
 	config.Implementation = "rig"
 	client, err = NewClient(config)
 	if err != nil {
@@ -233,7 +220,6 @@ func TestNewClient(t *testing.T) {
 		t.Fatal("Expected non-nil client")
 	}
 
-	// Check it's a Rig client
 	_, ok = client.(*RigClient)
 	if !ok {
 		t.Error("Expected *RigClient for 'rig' implementation")
@@ -259,11 +245,9 @@ func TestHostKeyError(t *testing.T) {
 }
 
 func TestParseSSHConfigWithGlobalDefaults(t *testing.T) {
-	// Create a temporary SSH config file with global defaults
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
 
-	// This matches the user's actual SSH config structure
 	configContent := `AddKeysToAgent yes
 UseKeychain yes
 IdentityFile ~/.ssh/id_ed25519
@@ -281,7 +265,6 @@ Host hephaestus
 		t.Fatalf("ParseSSHConfig failed: %v", err)
 	}
 
-	// Verify global defaults are parsed
 	if sshConfig.globalDefaults == nil {
 		t.Fatal("Expected globalDefaults to be set")
 	}
@@ -292,7 +275,6 @@ Host hephaestus
 		t.Errorf("Expected global IdentityFile '%s', got '%s'", expectedKeyPath, sshConfig.globalDefaults.IdentityFile)
 	}
 
-	// Test that host-specific entry is parsed
 	entry := sshConfig.GetEntry("hephaestus")
 	if entry == nil {
 		t.Fatal("Expected entry for 'hephaestus' but got nil")
@@ -304,35 +286,29 @@ Host hephaestus
 		t.Errorf("Expected User 'igor', got '%s'", entry.User)
 	}
 
-	// Test ApplyToConfig with global defaults
 	config := &Config{
 		Host: "hephaestus",
 	}
 
 	sshConfig.ApplyToConfig("hephaestus", config)
 
-	// Host should be updated to Hostname
 	if config.Host != "192.168.1.100" {
 		t.Errorf("Expected Host '192.168.1.100', got '%s'", config.Host)
 	}
 
-	// User should be set from host-specific entry
 	if config.User != "igor" {
 		t.Errorf("Expected User 'igor', got '%s'", config.User)
 	}
 
-	// KeyPath should be set from global default
 	if config.KeyPath != expectedKeyPath {
 		t.Errorf("Expected KeyPath '%s', got '%s'", expectedKeyPath, config.KeyPath)
 	}
 }
 
 func TestApplyToConfigGlobalDefaultsAndHostOverride(t *testing.T) {
-	// Create a temporary SSH config file
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config")
 
-	// Config with global defaults and host-specific overrides
 	configContent := `User globaluser
 IdentityFile ~/.ssh/global_key
 
@@ -350,7 +326,6 @@ Host myserver
 		t.Fatalf("ParseSSHConfig failed: %v", err)
 	}
 
-	// Test with host-specific settings (should override global)
 	config := &Config{
 		Host: "myserver",
 	}
@@ -366,7 +341,6 @@ Host myserver
 		t.Errorf("Expected KeyPath '%s' (host-specific), got '%s'", expectedKeyPath, config.KeyPath)
 	}
 
-	// Test with unknown host (should use global defaults)
 	config2 := &Config{
 		Host: "unknownhost",
 	}

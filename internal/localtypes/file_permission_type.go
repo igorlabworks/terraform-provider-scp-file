@@ -93,9 +93,6 @@ func (v FilePermissionValue) Type(ctx context.Context) attr.Type {
 	return FilePermissionType{}
 }
 
-// ValidateAttribute checks that the given input string is a valid file permission string,
-// expressed in numeric notation.
-// See: https://en.wikipedia.org/wiki/File-system_permissions#Numeric_notation
 func (v FilePermissionValue) ValidateAttribute(ctx context.Context, req xattr.ValidateAttributeRequest, resp *xattr.ValidateAttributeResponse) {
 	if v.IsNull() {
 		return

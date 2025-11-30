@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -188,14 +187,13 @@ func (r *scpSensitiveFileResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	destination := plan.Filename.ValueString()
-	filePerm := plan.FilePermission.ValueString()
-	dirPerm := plan.DirectoryPermission.ValueString()
-
-	fileMode, _ := strconv.ParseInt(filePerm, 8, 64)
-	dirMode, _ := strconv.ParseInt(dirPerm, 8, 64)
-
-	if err := writeRemoteFile(r.config, destination, content, os.FileMode(fileMode), os.FileMode(dirMode)); err != nil {
+	if err := writeRemoteFile(
+		r.config,
+		plan.Filename.ValueString(),
+		content,
+		parseFilePermissions(plan.FilePermission.ValueString()),
+		parseFilePermissions(plan.DirectoryPermission.ValueString()),
+	); err != nil {
 		resp.Diagnostics.AddError(
 			"Create SCP sensitive file error",
 			"An unexpected error occurred while writing the remote file\n\n"+
