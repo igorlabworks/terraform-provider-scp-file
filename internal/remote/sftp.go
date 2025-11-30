@@ -12,6 +12,7 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/skeema/knownhosts"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 // SFTPClient implements the Client interface using the pkg/sftp library.
@@ -41,20 +42,23 @@ func (c *SFTPClient) Connect() error {
 		authMethods = append(authMethods, ssh.Password(c.config.Password))
 	}
 
+	// Try SSH agent authentication
+	if agentAuth := c.loadSSHAgent(); agentAuth != nil {
+		authMethods = append(authMethods, agentAuth)
+	}
+
 	// Try key-based authentication if key_path is provided
 	if c.config.KeyPath != "" {
 		keyPath := expandPath(c.config.KeyPath)
 		key, err := os.ReadFile(keyPath)
-		if err != nil {
-			return fmt.Errorf("failed to read SSH key from %s: %w", keyPath, err)
+		if err == nil {
+			signer, err := ssh.ParsePrivateKey(key)
+			if err == nil {
+				authMethods = append(authMethods, ssh.PublicKeys(signer))
+			}
+			// If the key is passphrase-protected or can't be parsed, skip it.
+			// The SSH agent should handle passphrase-protected keys.
 		}
-
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return fmt.Errorf("failed to parse SSH key: %w", err)
-		}
-
-		authMethods = append(authMethods, ssh.PublicKeys(signer))
 	}
 
 	// If no explicit auth methods, try default SSH keys from ~/.ssh
@@ -226,6 +230,8 @@ func (c *SFTPClient) DeleteFile(remotePath string) error {
 }
 
 // loadDefaultKeys tries to load default SSH keys from ~/.ssh
+// Note: This only loads unencrypted keys. Passphrase-protected keys should be
+// handled by the SSH agent.
 func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {
 	var authMethods []ssh.AuthMethod
 
@@ -244,12 +250,30 @@ func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {
 		}
 		signer, err := ssh.ParsePrivateKey(key)
 		if err != nil {
+			// Skip passphrase-protected or invalid keys
 			continue
 		}
 		authMethods = append(authMethods, ssh.PublicKeys(signer))
 	}
 
 	return authMethods
+}
+
+// loadSSHAgent attempts to connect to the SSH agent and returns an AuthMethod.
+// Returns nil if the SSH agent is not available.
+func (c *SFTPClient) loadSSHAgent() ssh.AuthMethod {
+	sshAuthSock := os.Getenv("SSH_AUTH_SOCK")
+	if sshAuthSock == "" {
+		return nil
+	}
+
+	conn, err := net.Dial("unix", sshAuthSock)
+	if err != nil {
+		return nil
+	}
+
+	agentClient := agent.NewClient(conn)
+	return ssh.PublicKeysCallback(agentClient.Signers)
 }
 
 // createHostKeyCallback creates the host key callback for SSH connections.
@@ -294,26 +318,38 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := kh(hostname, remote, key)
 		if err != nil {
+			keyLine := knownhosts.Line([]string{hostname}, key)
+			fingerprint := ssh.FingerprintSHA256(key)
+
 			// Check if this is a key not found error
 			if knownhosts.IsHostKeyChanged(err) {
 				return &HostKeyError{
 					Host:           hostname,
 					KeyType:        key.Type(),
-					KeyFingerprint: ssh.FingerprintSHA256(key),
-					KnownHostsLine: knownhosts.Line([]string{hostname}, key),
-					Err:            fmt.Errorf("host key has changed for %s. This could indicate a man-in-the-middle attack. "+
-						"If you trust the new key, remove the old entry from %s and add this line:\n%s",
-						hostname, knownHostsPath, knownhosts.Line([]string{hostname}, key)),
+					KeyFingerprint: fingerprint,
+					KnownHostsLine: keyLine,
+					Err:            fmt.Errorf("host key has changed for %s. This could indicate a man-in-the-middle attack.\n"+
+						"Server presented key:\n"+
+						"  Type: %s\n"+
+						"  Fingerprint: %s\n"+
+						"  Key line: %s\n"+
+						"If you trust this new key, remove the old entry from %s and add the above line.",
+						hostname, key.Type(), fingerprint, keyLine, knownHostsPath),
 				}
 			}
 			if knownhosts.IsHostUnknown(err) {
 				return &HostKeyError{
 					Host:           hostname,
 					KeyType:        key.Type(),
-					KeyFingerprint: ssh.FingerprintSHA256(key),
-					KnownHostsLine: knownhosts.Line([]string{hostname}, key),
-					Err:            fmt.Errorf("host key not found for %s. To add this host, append this line to %s:\n%s",
-						hostname, knownHostsPath, knownhosts.Line([]string{hostname}, key)),
+					KeyFingerprint: fingerprint,
+					KnownHostsLine: keyLine,
+					Err:            fmt.Errorf("host key not found for %s.\n"+
+						"Server presented key:\n"+
+						"  Type: %s\n"+
+						"  Fingerprint: %s\n"+
+						"  Key line: %s\n"+
+						"To accept this host, append the above key line to %s",
+						hostname, key.Type(), fingerprint, keyLine, knownHostsPath),
 				}
 			}
 			return err
