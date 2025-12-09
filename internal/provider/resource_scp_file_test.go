@@ -17,7 +17,7 @@ func TestSCPFile_Basic(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 	remotePath := "/config/test_upload/test_file_basic.txt"
 
 	r.Test(t, r.TestCase{
@@ -49,7 +49,7 @@ func TestSCPFile_Content(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 	remotePath := "/config/test_upload/test_file_content.txt"
 
 	r.Test(t, r.TestCase{
@@ -69,7 +69,7 @@ func TestSCPFile_SensitiveContent(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 	remotePath := "/config/test_upload/test_file_sensitive.txt"
 
 	r.Test(t, r.TestCase{
@@ -89,7 +89,7 @@ func TestSCPFile_Base64Content(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 	remotePath := "/config/test_upload/test_file_base64.txt"
 
 	r.Test(t, r.TestCase{
@@ -109,7 +109,7 @@ func TestSCPFile_Source(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 
 	// Create a temporary source file
 	sourceDirPath := t.TempDir()
@@ -138,7 +138,7 @@ func TestSCPFile_Validators(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 	remotePath := "/config/test_upload/test_file_validators.txt"
 
 	r.Test(t, r.TestCase{
@@ -148,31 +148,33 @@ func TestSCPFile_Validators(t *testing.T) {
 			{
 				Config: fmt.Sprintf(`
 				provider "scp" {
-				  host     = %[1]q
-				  port     = %[2]d
-				  user     = %[3]q
-				  password = %[4]q
+				  host             = %[1]q
+				  port             = %[2]d
+				  user             = %[3]q
+				  password         = %[4]q
+				  known_hosts_path = %[6]q
 				}
-				
+
 				resource "scp_file" "file" {
 				  filename = %[5]q
-				}`, config.Host, config.Port, config.User, config.Password, remotePath),
+				}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
 				ExpectError: regexp.MustCompile(`.*Error: Invalid Attribute Combination`),
 			},
 			{
 				Config: fmt.Sprintf(`
 				provider "scp" {
-				  host     = %[1]q
-				  port     = %[2]d
-				  user     = %[3]q
-				  password = %[4]q
+				  host             = %[1]q
+				  port             = %[2]d
+				  user             = %[3]q
+				  password         = %[4]q
+				  known_hosts_path = %[6]q
 				}
-				
+
 				resource "scp_file" "file" {
 				  content = "content"
 				  sensitive_content = "sensitive_content"
 				  filename = %[5]q
-				}`, config.Host, config.Port, config.User, config.Password, remotePath),
+				}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
 				ExpectError: regexp.MustCompile(`.*Error: Invalid Attribute Combination`),
 			},
 		},
@@ -185,7 +187,7 @@ func TestSCPFile_Permissions(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 	remotePath := "/config/test_upload/test_file_permissions.txt"
 
 	r.Test(t, r.TestCase{
@@ -194,35 +196,37 @@ func TestSCPFile_Permissions(t *testing.T) {
 			{
 				Config: fmt.Sprintf(`
 					provider "scp" {
-					  host     = %[1]q
-					  port     = %[2]d
-					  user     = %[3]q
-					  password = %[4]q
+					  host             = %[1]q
+					  port             = %[2]d
+					  user             = %[3]q
+					  password         = %[4]q
+					  known_hosts_path = %[6]q
 					}
-					
+
 					resource "scp_file" "file" {
 						content              = "This is some content"
 						filename             = %[5]q
 						file_permission      = "9999"
-					}`, config.Host, config.Port, config.User, config.Password, remotePath),
+					}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
 				ExpectError: regexp.MustCompile(`bad mode permission`),
 			},
 			{
 				SkipFunc: skipTestsWindows(),
 				Config: fmt.Sprintf(`
 					provider "scp" {
-					  host     = %[1]q
-					  port     = %[2]d
-					  user     = %[3]q
-					  password = %[4]q
+					  host             = %[1]q
+					  port             = %[2]d
+					  user             = %[3]q
+					  password         = %[4]q
+					  known_hosts_path = %[6]q
 					}
-					
+
 					resource "scp_file" "file" {
 						content              = "This is some content"
 						filename             = %[5]q
 						file_permission      = "0600"
 						directory_permission = "0700"
-					}`, config.Host, config.Port, config.User, config.Password, remotePath),
+					}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
 				Check: r.ComposeTestCheckFunc(
 					checkRemoteFilePermissions(config, remotePath),
 				),
@@ -238,7 +242,7 @@ func TestSCPFile_DriftDetection(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfig()
+	config := getTestSSHConfig(t)
 	remotePath := "/config/test_upload/test_file_drift.txt"
 
 	r.Test(t, r.TestCase{
@@ -285,7 +289,7 @@ func TestSCPFile_RigImplementation(t *testing.T) {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
 
-	config := getTestSSHConfigWithImplementation("rig")
+	config := getTestSSHConfigWithImplementation(t, "rig")
 	remotePath := "/config/test_upload/test_file_rig.txt"
 
 	r.Test(t, r.TestCase{
@@ -303,90 +307,96 @@ func TestSCPFile_RigImplementation(t *testing.T) {
 func testAccSCPFileConfig(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
-		  host     = %[1]q
-		  port     = %[2]d
-		  user     = %[3]q
-		  password = %[4]q
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
 		}
 
 		resource "scp_file" "test" {
 		  content  = %[5]q
 		  filename = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename)
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
 }
 
 func testAccSCPFileSensitiveContentConfig(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
-		  host     = %[1]q
-		  port     = %[2]d
-		  user     = %[3]q
-		  password = %[4]q
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
 		}
 
 		resource "scp_file" "test" {
 		  sensitive_content = %[5]q
 		  filename          = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename)
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
 }
 
 func testAccSCPFileBase64ContentConfig(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
-		  host     = %[1]q
-		  port     = %[2]d
-		  user     = %[3]q
-		  password = %[4]q
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
 		}
 
 		resource "scp_file" "test" {
 		  content_base64 = %[5]q
 		  filename       = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename)
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
 }
 
 func testAccSCPFileSourceConfig(config *scpProviderConfig, source, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
-		  host     = %[1]q
-		  port     = %[2]d
-		  user     = %[3]q
-		  password = %[4]q
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
 		}
 
 		resource "scp_file" "test" {
 		  source   = %[5]q
 		  filename = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, source, filename)
+		}`, config.Host, config.Port, config.User, config.Password, source, filename, config.KnownHostsPath)
 }
 
 func testAccSCPFileDecodedBase64ContentConfig(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
-		  host     = %[1]q
-		  port     = %[2]d
-		  user     = %[3]q
-		  password = %[4]q
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
 		}
 
 		resource "scp_file" "test" {
 		  content_base64 = base64encode(%[5]q)
 		  filename       = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename)
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
 }
 
 func testAccSCPFileConfigWithImplementation(config *scpProviderConfig, content, filename, implementation string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
-		  host           = %[1]q
-		  port           = %[2]d
-		  user           = %[3]q
-		  password       = %[4]q
-		  implementation = %[7]q
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
+		  implementation   = %[8]q
 		}
 
 		resource "scp_file" "test" {
 		  content  = %[5]q
 		  filename = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename, implementation)
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath, implementation)
 }

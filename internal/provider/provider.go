@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"os"
+	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -176,46 +177,35 @@ type fileChecksums struct {
 }
 
 func genFileChecksums(data []byte) fileChecksums {
-	var checksums fileChecksums
-
 	md5Sum := md5.Sum(data)
-	checksums.md5Hex = hex.EncodeToString(md5Sum[:])
-
 	sha1Sum := sha1.Sum(data)
-	checksums.sha1Hex = hex.EncodeToString(sha1Sum[:])
-
 	sha256Sum := sha256.Sum256(data)
-	checksums.sha256Hex = hex.EncodeToString(sha256Sum[:])
-	checksums.sha256Base64 = base64.StdEncoding.EncodeToString(sha256Sum[:])
-
 	sha512Sum := sha512.Sum512(data)
-	checksums.sha512Hex = hex.EncodeToString(sha512Sum[:])
-	checksums.sha512Base64 = base64.StdEncoding.EncodeToString(sha512Sum[:])
 
-	return checksums
-}
-
-// toRemoteConfig converts the provider config to a remote.Config.
-func (c *scpProviderConfig) toRemoteConfig() *remote.Config {
-	return &remote.Config{
-		Host:           c.Host,
-		Port:           c.Port,
-		User:           c.User,
-		Password:       c.Password,
-		KeyPath:        c.KeyPath,
-		KnownHostsPath: c.KnownHostsPath,
-		IgnoreHostKey:  c.IgnoreHostKey,
-		SSHConfigPath:  c.SSHConfigPath,
-		Implementation: c.Implementation,
+	return fileChecksums{
+		md5Hex:       hex.EncodeToString(md5Sum[:]),
+		sha1Hex:      hex.EncodeToString(sha1Sum[:]),
+		sha256Hex:    hex.EncodeToString(sha256Sum[:]),
+		sha256Base64: base64.StdEncoding.EncodeToString(sha256Sum[:]),
+		sha512Hex:    hex.EncodeToString(sha512Sum[:]),
+		sha512Base64: base64.StdEncoding.EncodeToString(sha512Sum[:]),
 	}
 }
 
-// createRemoteClient creates a new remote client using the provider configuration.
 func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
-	return remote.NewClient(config.toRemoteConfig())
+	return remote.NewClient(&remote.Config{
+		Host:           config.Host,
+		Port:           config.Port,
+		User:           config.User,
+		Password:       config.Password,
+		KeyPath:        config.KeyPath,
+		KnownHostsPath: config.KnownHostsPath,
+		IgnoreHostKey:  config.IgnoreHostKey,
+		SSHConfigPath:  config.SSHConfigPath,
+		Implementation: config.Implementation,
+	})
 }
 
-// writeRemoteFile writes content to a remote file using the remote client interface.
 func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) error {
 	client, err := createRemoteClient(config)
 	if err != nil {
@@ -230,7 +220,6 @@ func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byt
 	return client.WriteFile(remotePath, content, fileMode, dirMode)
 }
 
-// readRemoteFile reads content from a remote file using the remote client interface.
 func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error) {
 	client, err := createRemoteClient(config)
 	if err != nil {
@@ -245,7 +234,6 @@ func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error
 	return client.ReadFile(remotePath)
 }
 
-// remoteFileExists checks if a remote file exists using the remote client interface.
 func remoteFileExists(config *scpProviderConfig, remotePath string) (bool, error) {
 	client, err := createRemoteClient(config)
 	if err != nil {
@@ -260,7 +248,6 @@ func remoteFileExists(config *scpProviderConfig, remotePath string) (bool, error
 	return client.FileExists(remotePath)
 }
 
-// deleteRemoteFile deletes a remote file using the remote client interface.
 func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
 	client, err := createRemoteClient(config)
 	if err != nil {
@@ -273,4 +260,9 @@ func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
 	}
 
 	return client.DeleteFile(remotePath)
+}
+
+func parseFilePermissions(permStr string) os.FileMode {
+	perm, _ := strconv.ParseInt(permStr, 8, 64)
+	return os.FileMode(perm)
 }

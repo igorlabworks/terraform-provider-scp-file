@@ -224,32 +224,9 @@ func (r *scpSensitiveFileResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	// If the remote file doesn't exist, mark the resource for creation.
-	outputPath := state.Filename.ValueString()
-	exists, err := remoteFileExists(r.config, outputPath)
+	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Read SCP sensitive file error",
-			"An unexpected error occurred while checking remote file existence\n\n"+
-				fmt.Sprintf("Original Error: %s", err),
-		)
-		return
-	}
-	if !exists {
 		resp.State.RemoveResource(ctx)
-		return
-	}
-
-	// Verify that the content of the remote file matches the content we
-	// expect. Otherwise, the file might have been modified externally, and we
-	// must reconcile.
-	outputContent, err := readRemoteFile(r.config, outputPath)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Read SCP sensitive file error",
-			"An unexpected error occurred while reading the remote file\n\n"+
-				fmt.Sprintf("Original Error: %s", err),
-		)
 		return
 	}
 
@@ -290,17 +267,13 @@ func (r *scpSensitiveFileResource) Delete(ctx context.Context, req resource.Dele
 }
 
 func parseSCPSensitiveFileContent(plan scpSensitiveFileResourceModel) ([]byte, error) {
-	if !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown() {
+	if !plan.ContentBase64.IsNull() {
 		return base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
 	}
-
-	if !plan.Source.IsNull() && !plan.Source.IsUnknown() {
-		sourceFilePath := plan.Source.ValueString()
-		return os.ReadFile(sourceFilePath)
+	if !plan.Source.IsNull() {
+		return os.ReadFile(plan.Source.ValueString())
 	}
-
-	content := plan.Content.ValueString()
-	return []byte(content), nil
+	return []byte(plan.Content.ValueString()), nil
 }
 
 type scpSensitiveFileResourceModel struct {

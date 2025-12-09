@@ -24,16 +24,13 @@ const (
 
 var defaultKeyNames = []string{"id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"}
 
-// SFTPClient implements the Client interface using the pkg/sftp library.
 type SFTPClient struct {
 	config     *Config
 	sshClient  *ssh.Client
 	sftpClient *sftp.Client
 }
 
-// NewSFTPClient creates a new SFTP client with the given configuration.
 func NewSFTPClient(config *Config) (*SFTPClient, error) {
-	// Apply SSH config file settings
 	sshConfig, err := ParseSSHConfig(config.SSHConfigPath)
 	if err == nil {
 		sshConfig.ApplyToConfig(config.Host, config)
@@ -100,10 +97,9 @@ func (c *SFTPClient) Connect() error {
 		port = defaultSSHPort
 	}
 
-	addr := net.JoinHostPort(c.config.Host, strconv.Itoa(port))
-	client, err := ssh.Dial("tcp", addr, sshConfig)
+	client, err := ssh.Dial("tcp", net.JoinHostPort(c.config.Host, strconv.Itoa(port)), sshConfig)
 	if err != nil {
-		return fmt.Errorf("failed to connect to SSH server %s: %w", addr, err)
+		return fmt.Errorf("failed to connect to SSH server %s: %w", net.JoinHostPort(c.config.Host, strconv.Itoa(port)), err)
 	}
 
 	c.sshClient = client
@@ -132,9 +128,8 @@ func (c *SFTPClient) Close() error {
 }
 
 func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.FileMode, dirMode os.FileMode) error {
-	dir := filepath.Dir(remotePath)
-	if err := c.sftpClient.MkdirAll(dir); err != nil {
-		return fmt.Errorf("failed to create remote directory %s: %w", dir, err)
+	if err := c.sftpClient.MkdirAll(filepath.Dir(remotePath)); err != nil {
+		return fmt.Errorf("failed to create remote directory %s: %w", filepath.Dir(remotePath), err)
 	}
 
 	f, err := c.sftpClient.Create(remotePath)
@@ -179,7 +174,6 @@ func (c *SFTPClient) DeleteFile(remotePath string) error {
 	return nil
 }
 
-// Passphrase-protected keys should be handled by the SSH agent.
 func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {
 	var authMethods []ssh.AuthMethod
 
@@ -225,7 +219,6 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 		return ssh.InsecureIgnoreHostKey(), nil
 	}
 
-	// Determine known_hosts file path
 	knownHostsPath := c.config.KnownHostsPath
 	if knownHostsPath == "" {
 		home, err := os.UserHomeDir()
@@ -237,56 +230,51 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 		knownHostsPath = expandPath(knownHostsPath)
 	}
 
-	dir := filepath.Dir(knownHostsPath)
-	if err := os.MkdirAll(dir, sshDirPerm); err != nil {
+	if err := os.MkdirAll(filepath.Dir(knownHostsPath), sshDirPerm); err != nil {
 		return nil, fmt.Errorf("failed to create .ssh directory: %w", err)
 	}
-	if err := os.WriteFile(knownHostsPath, []byte{}, knownHostsPerm); err != nil && !os.IsExist(err) {
-		return nil, fmt.Errorf("failed to create known_hosts file: %w", err)
+	if _, err := os.Stat(knownHostsPath); os.IsNotExist(err) {
+		if err := os.WriteFile(knownHostsPath, []byte{}, knownHostsPerm); err != nil {
+			return nil, fmt.Errorf("failed to create known_hosts file: %w", err)
+		}
 	}
 
-	// Use skeema/knownhosts for host key verification
 	kh, err := knownhosts.New(knownHostsPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse known_hosts: %w", err)
 	}
 
-	// Wrap the callback to provide helpful error messages
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := kh(hostname, remote, key)
 		if err != nil {
-			keyLine := knownhosts.Line([]string{hostname}, key)
-			fingerprint := ssh.FingerprintSHA256(key)
-
-			// Check if this is a key not found error
 			if knownhosts.IsHostKeyChanged(err) {
 				return &HostKeyError{
 					Host:           hostname,
 					KeyType:        key.Type(),
-					KeyFingerprint: fingerprint,
-					KnownHostsLine: keyLine,
+					KeyFingerprint: ssh.FingerprintSHA256(key),
+					KnownHostsLine: knownhosts.Line([]string{hostname}, key),
 					Err: fmt.Errorf("host key has changed for %s. This could indicate a man-in-the-middle attack.\n"+
 						"Server presented key:\n"+
 						"  Type: %s\n"+
 						"  Fingerprint: %s\n"+
 						"  Key line: %s\n"+
 						"If you trust this new key, remove the old entry from %s and add the above line.",
-						hostname, key.Type(), fingerprint, keyLine, knownHostsPath),
+						hostname, key.Type(), ssh.FingerprintSHA256(key), knownhosts.Line([]string{hostname}, key), knownHostsPath),
 				}
 			}
 			if knownhosts.IsHostUnknown(err) {
 				return &HostKeyError{
 					Host:           hostname,
 					KeyType:        key.Type(),
-					KeyFingerprint: fingerprint,
-					KnownHostsLine: keyLine,
+					KeyFingerprint: ssh.FingerprintSHA256(key),
+					KnownHostsLine: knownhosts.Line([]string{hostname}, key),
 					Err: fmt.Errorf("host key not found for %s.\n"+
 						"Server presented key:\n"+
 						"  Type: %s\n"+
 						"  Fingerprint: %s\n"+
 						"  Key line: %s\n"+
 						"To accept this host, append the above key line to %s",
-						hostname, key.Type(), fingerprint, keyLine, knownHostsPath),
+						hostname, key.Type(), ssh.FingerprintSHA256(key), knownhosts.Line([]string{hostname}, key), knownHostsPath),
 				}
 			}
 			return err

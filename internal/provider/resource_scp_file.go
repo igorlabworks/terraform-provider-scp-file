@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -246,32 +245,9 @@ func (r *scpFileResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// If the remote file doesn't exist, mark the resource for creation.
-	outputPath := state.Filename.ValueString()
-	exists, err := remoteFileExists(r.config, outputPath)
+	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Read SCP file error",
-			"An unexpected error occurred while checking remote file existence\n\n"+
-				fmt.Sprintf("Original Error: %s", err),
-		)
-		return
-	}
-	if !exists {
 		resp.State.RemoveResource(ctx)
-		return
-	}
-
-	// Verify that the content of the remote file matches the content we
-	// expect. Otherwise, the file might have been modified externally, and we
-	// must reconcile.
-	outputContent, err := readRemoteFile(r.config, outputPath)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Read SCP file error",
-			"An unexpected error occurred while reading the remote file\n\n"+
-				fmt.Sprintf("Original Error: %s", err),
-		)
 		return
 	}
 
@@ -311,19 +287,14 @@ func (r *scpFileResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 }
 
-func parseFilePermissions(permStr string) os.FileMode {
-	perm, _ := strconv.ParseInt(permStr, 8, 64)
-	return os.FileMode(perm)
-}
-
 func parseSCPFileContent(plan scpFileResourceModel) ([]byte, error) {
-	if !plan.SensitiveContent.IsNull() && !plan.SensitiveContent.IsUnknown() {
+	if !plan.SensitiveContent.IsNull() {
 		return []byte(plan.SensitiveContent.ValueString()), nil
 	}
-	if !plan.ContentBase64.IsNull() && !plan.ContentBase64.IsUnknown() {
+	if !plan.ContentBase64.IsNull() {
 		return base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
 	}
-	if !plan.Source.IsNull() && !plan.Source.IsUnknown() {
+	if !plan.Source.IsNull() {
 		return os.ReadFile(plan.Source.ValueString())
 	}
 	return []byte(plan.Content.ValueString()), nil

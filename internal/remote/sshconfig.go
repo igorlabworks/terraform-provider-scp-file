@@ -22,8 +22,6 @@ type SSHConfig struct {
 	globalDefaults *SSHConfigEntry
 }
 
-// ParseSSHConfig parses the SSH config file at the given path.
-// If path is empty, it uses the default ~/.ssh/config.
 func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 	if configPath == "" {
 		home, err := os.UserHomeDir()
