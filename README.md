@@ -1,64 +1,238 @@
-# Terraform Provider Scaffolding (Terraform Plugin Framework)
+# Terraform Provider for SCP File Transfer
 
-_This template repository is built on the [Terraform Plugin Framework](https://github.com/hashicorp/terraform-plugin-framework). The template repository built on the [Terraform Plugin SDK](https://github.com/hashicorp/terraform-plugin-sdk) can be found at [terraform-provider-scaffolding](https://github.com/hashicorp/terraform-provider-scaffolding). See [Which SDK Should I Use?](https://developer.hashicorp.com/terraform/plugin/framework-benefits) in the Terraform documentation for additional information._
+This Terraform provider enables managing files on remote hosts via SCP/SFTP. It provides the same interface as the [hashicorp/local](https://registry.terraform.io/providers/hashicorp/local/latest) provider for `local_file` and `local_sensitive_file` resources, but transfers files to a remote destination instead of the local filesystem.
 
-This repository is a *template* for a [Terraform](https://www.terraform.io) provider. It is intended as a starting point for creating Terraform providers, containing:
+## Features
 
-- A resource and a data source (`internal/provider/`),
-- Examples (`examples/`) and generated documentation (`docs/`),
-- Miscellaneous meta files.
-
-These files contain boilerplate code that you will need to edit to create your own Terraform provider. Tutorials for creating Terraform providers can be found on the [HashiCorp Developer](https://developer.hashicorp.com/terraform/tutorials/providers-plugin-framework) platform. _Terraform Plugin Framework specific guides are titled accordingly._
-
-Please see the [GitHub template repository documentation](https://help.github.com/en/github/creating-cloning-and-archiving-repositories/creating-a-repository-from-a-template) for how to create a new repository from this template on GitHub.
-
-Once you've written your provider, you'll want to [publish it on the Terraform Registry](https://developer.hashicorp.com/terraform/registry/providers/publishing) so that others can use it.
+- **Similar interface to local provider**: Uses the same schema as `local_file` and `local_sensitive_file`
+- **Remote file management**: Creates, updates, and deletes files on remote hosts via SFTP
+- **Drift detection**: Automatically detects when remote files have been modified externally and reconciles state
+- **Multiple content sources**: Supports content, content_base64, sensitive_content, and source file
+- **File permissions**: Configure file and directory permissions
+- **Checksum attributes**: Provides MD5, SHA1, SHA256, and SHA512 checksums
+- **SSH config support**: Reads `~/.ssh/config` for User, Hostname, Port, and IdentityFile directives
+- **Host key verification**: Uses known_hosts file for host key verification with helpful error messages
+- **Multiple implementations**: Supports both SFTP (pkg/sftp) and rig (k0sproject/rig v2) implementations
 
 ## Requirements
 
 - [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.0
-- [Go](https://golang.org/doc/install) >= 1.24
+- [Go](https://golang.org/doc/install) >= 1.24 (for building from source)
 
-## Building The Provider
+## Installation
 
-1. Clone the repository
-1. Enter the repository directory
-1. Build the provider using the Go `install` command:
+### Building from Source
 
-```shell
-go install
+```bash
+git clone https://github.com/igorlabworks/terraform-provider-scp.git
+cd terraform-provider-scp
+go build -o terraform-provider-scp
 ```
 
-## Adding Dependencies
+## Usage
 
-This provider uses [Go modules](https://github.com/golang/go/wiki/Modules).
-Please see the Go documentation for the most up to date information about using Go modules.
+### Provider Configuration
 
-To add a new dependency `github.com/author/dependency` to your Terraform provider:
-
-```shell
-go get github.com/author/dependency
-go mod tidy
+```hcl
+provider "scp" {
+  host             = "example.com"      # Required: hostname, IP, or SSH config alias
+  port             = 22                 # Optional, defaults to 22
+  user             = "username"         # Optional, can be set via ~/.ssh/config
+  password         = "password"         # Optional, for password auth
+  key_path         = "~/.ssh/id_rsa"    # Optional, for key-based auth
+  ssh_config_path  = "~/.ssh/config"    # Optional, path to SSH config file
+  known_hosts_path = "~/.ssh/known_hosts" # Optional, path to known_hosts file
+  ignore_host_key  = false              # Optional, skip host key verification (insecure)
+  implementation   = "sftp"             # Optional, "sftp" (default) or "rig"
+}
 ```
 
-Then commit the changes to `go.mod` and `go.sum`.
+### Authentication Methods
 
-## Using the provider
+The provider supports multiple authentication methods (in order of precedence):
 
-Fill this in for each provider
+1. **Password authentication**: Use the `password` attribute
+2. **SSH key authentication**: Use the `key_path` attribute
+3. **SSH config file**: Settings from `~/.ssh/config` (User, Hostname, Port, IdentityFile)
+4. **Default SSH keys**: If nothing is specified, tries keys from `~/.ssh/` in order:
+   - `id_ed25519`
+   - `id_ecdsa`
+   - `id_rsa`
+   - `id_dsa`
 
-## Developing the Provider
+### SSH Config Support
 
-If you wish to work on the provider, you'll first need [Go](http://www.golang.org) installed on your machine (see [Requirements](#requirements) above).
+The provider reads `~/.ssh/config` and supports the following directives:
 
-To compile the provider, run `go install`. This will build the provider and put the provider binary in the `$GOPATH/bin` directory.
+- `Host` - Pattern matching for host aliases
+- `Hostname` - The actual hostname to connect to
+- `User` - Username for authentication
+- `Port` - SSH port
+- `IdentityFile` - Path to SSH private key
 
-To generate or update documentation, run `make generate`.
-
-In order to run the full suite of Acceptance tests, run `make testacc`.
-
-*Note:* Acceptance tests create real resources, and often cost money to run.
-
-```shell
-make testacc
+Example `~/.ssh/config`:
 ```
+Host myserver
+    Hostname actual.server.com
+    User deploy
+    Port 2222
+    IdentityFile ~/.ssh/deploy_key
+```
+
+Then in Terraform:
+```hcl
+provider "scp" {
+  host = "myserver"  # Uses settings from SSH config
+}
+```
+
+### Host Key Verification
+
+By default, the provider verifies host keys using the `~/.ssh/known_hosts` file. If the host key is not found or has changed, the provider will output a helpful error message with the line to add to your known_hosts file:
+
+```
+host key not found for example.com. To add this host, append this line to /home/user/.ssh/known_hosts:
+example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
+```
+
+To disable host key verification (not recommended for production):
+```hcl
+provider "scp" {
+  host            = "example.com"
+  ignore_host_key = true
+}
+```
+
+### Implementation Selection
+
+The provider supports two implementations:
+
+- **sftp** (default): Uses `pkg/sftp` library. More lightweight and focused.
+- **rig**: Uses `k0sproject/rig v2` library. More comprehensive, supports additional features.
+
+```hcl
+provider "scp" {
+  host           = "example.com"
+  implementation = "rig"  # Use rig implementation
+}
+```
+
+### Resources
+
+#### scp_file
+
+Creates a file on a remote host with the given content.
+
+```hcl
+resource "scp_file" "example" {
+  content  = "Hello, World!"
+  filename = "/home/user/hello.txt"
+}
+```
+
+With base64 content:
+
+```hcl
+resource "scp_file" "binary_file" {
+  content_base64 = base64encode(file("local_file.bin"))
+  filename       = "/home/user/file.bin"
+}
+```
+
+From a local source file:
+
+```hcl
+resource "scp_file" "from_source" {
+  source   = "./local_config.txt"
+  filename = "/etc/app/config.txt"
+}
+```
+
+With custom permissions:
+
+```hcl
+resource "scp_file" "script" {
+  content              = "#!/bin/bash\necho 'Hello'"
+  filename             = "/home/user/script.sh"
+  file_permission      = "0755"
+  directory_permission = "0755"
+}
+```
+
+#### scp_sensitive_file
+
+Creates a file on a remote host with sensitive content. The content will not be displayed in Terraform plan output.
+
+```hcl
+resource "scp_sensitive_file" "credentials" {
+  content  = var.secret_data
+  filename = "/home/user/.credentials"
+  file_permission = "0600"
+}
+```
+
+### Attributes Reference
+
+Both `scp_file` and `scp_sensitive_file` resources support the following:
+
+#### Arguments
+
+- `filename` - (Required) The path to the file on the remote host. Missing parent directories will be created.
+- `content` - (Optional) Content to store in the file, expected to be a UTF-8 encoded string. Conflicts with `content_base64`, `sensitive_content`, and `source`.
+- `content_base64` - (Optional) Content to store in the file, expected to be binary encoded as base64 string. Conflicts with `content`, `sensitive_content`, and `source`.
+- `source` - (Optional) Path to a local file to use as source. Conflicts with `content`, `content_base64`, and `sensitive_content`.
+- `sensitive_content` - (Optional, `scp_file` only, deprecated) Use `scp_sensitive_file` instead.
+- `file_permission` - (Optional) Permissions for the file in octal notation. Default is `"0777"` for `scp_file` and `"0700"` for `scp_sensitive_file`.
+- `directory_permission` - (Optional) Permissions for created directories in octal notation. Default is `"0777"` for `scp_file` and `"0700"` for `scp_sensitive_file`.
+
+#### Read-Only Attributes
+
+- `id` - The hexadecimal encoding of the SHA1 checksum of the file content.
+- `content_md5` - MD5 checksum of file content.
+- `content_sha1` - SHA1 checksum of file content.
+- `content_sha256` - SHA256 checksum of file content.
+- `content_base64sha256` - Base64 encoded SHA256 checksum of file content.
+- `content_sha512` - SHA512 checksum of file content.
+- `content_base64sha512` - Base64 encoded SHA512 checksum of file content.
+
+## Drift Detection
+
+The provider automatically detects changes to remote files made outside of Terraform. When a file's content changes (detected via SHA1 checksum comparison), the provider will:
+
+1. Remove the resource from state during refresh
+2. Recreate the file with the expected content during the next apply
+
+This ensures that the remote file always matches the desired state in your Terraform configuration.
+
+## Development
+
+### Building
+
+```bash
+go build -o terraform-provider-scp-file
+```
+
+### Testing
+
+Run unit tests:
+```bash
+go test -v ./...
+```
+
+Run acceptance tests (requires SSH server):
+```bash
+TF_ACC=1 TEST_SSH_HOST=localhost TEST_SSH_PORT=22 TEST_SSH_USER=testuser TEST_SSH_PASSWORD=testpass go test -v ./internal/provider/...
+```
+
+### Architecture
+
+The provider uses a pluggable remote client interface that allows different implementations:
+
+- `internal/remote/interface.go` - Defines the `Client` interface
+- `internal/remote/sftp.go` - SFTP implementation using pkg/sftp
+- `internal/remote/rig.go` - Rig implementation using k0sproject/rig v2
+- `internal/remote/sshconfig.go` - SSH config file parser
+
+## License
+
+This project is licensed under the MIT License.
