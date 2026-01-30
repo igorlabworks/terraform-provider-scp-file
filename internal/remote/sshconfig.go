@@ -18,8 +18,9 @@ type SSHConfigEntry struct {
 }
 
 type SSHConfig struct {
-	entries        map[string]*SSHConfigEntry
-	globalDefaults *SSHConfigEntry
+	entries         map[string]*SSHConfigEntry
+	orderedPatterns []string
+	globalDefaults  *SSHConfigEntry
 }
 
 func ParseSSHConfig(configPath string) (*SSHConfig, error) {
@@ -79,6 +80,7 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 			if currentEntry != nil {
 				for _, pattern := range currentPatterns {
 					config.entries[pattern] = currentEntry
+					config.orderedPatterns = append(config.orderedPatterns, pattern)
 				}
 			}
 			currentPatterns = strings.Fields(value)
@@ -117,6 +119,7 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 	if currentEntry != nil {
 		for _, pattern := range currentPatterns {
 			config.entries[pattern] = currentEntry
+			config.orderedPatterns = append(config.orderedPatterns, pattern)
 		}
 	}
 
@@ -128,13 +131,15 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 }
 
 func (c *SSHConfig) GetEntry(host string) *SSHConfigEntry {
+	// Check exact match first
 	if entry, ok := c.entries[host]; ok {
 		return entry
 	}
 
-	for pattern, entry := range c.entries {
-		if matchPattern(pattern, host) {
-			return entry
+	// Check patterns in file order (first match wins)
+	for _, pattern := range c.orderedPatterns {
+		if pattern != host && matchPattern(pattern, host) {
+			return c.entries[pattern]
 		}
 	}
 

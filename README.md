@@ -6,13 +6,13 @@ This Terraform provider enables managing files on remote hosts via SCP/SFTP. It 
 
 - **Similar interface to local provider**: Uses the same schema as `local_file` and `local_sensitive_file`
 - **Remote file management**: Creates, updates, and deletes files on remote hosts via SFTP
-- **Drift detection**: Automatically detects when remote files have been modified externally and reconciles state
+- **Drift detection**: Automatically detects when remote files have been modified externally (content or permissions) and reconciles state
 - **Multiple content sources**: Supports content, content_base64, sensitive_content, and source file
-- **File permissions**: Configure file and directory permissions
+- **File and directory permissions**: Configure file and directory permissions with proper enforcement
 - **Checksum attributes**: Provides MD5, SHA1, SHA256, and SHA512 checksums
-- **SSH config support**: Reads `~/.ssh/config` for User, Hostname, Port, and IdentityFile directives
+- **SSH config support**: Reads `~/.ssh/config` for User, Hostname, Port, and IdentityFile directives (with proper first-match semantics)
+- **SSH agent support**: Automatically uses SSH agent when available
 - **Host key verification**: Uses known_hosts file for host key verification with helpful error messages
-- **Multiple implementations**: Supports both SFTP (pkg/sftp) and rig (k0sproject/rig v2) implementations
 
 ## Requirements
 
@@ -43,17 +43,16 @@ provider "scp" {
   ssh_config_path  = "~/.ssh/config"    # Optional, path to SSH config file
   known_hosts_path = "~/.ssh/known_hosts" # Optional, path to known_hosts file
   ignore_host_key  = false              # Optional, skip host key verification (insecure)
-  implementation   = "sftp"             # Optional, "sftp" (default) or "rig"
 }
 ```
 
 ### Authentication Methods
 
-The provider supports multiple authentication methods (in order of precedence):
+The provider supports multiple authentication methods (tried in order):
 
 1. **Password authentication**: Use the `password` attribute
-2. **SSH key authentication**: Use the `key_path` attribute
-3. **SSH config file**: Settings from `~/.ssh/config` (User, Hostname, Port, IdentityFile)
+2. **SSH agent**: Automatically uses `SSH_AUTH_SOCK` if available
+3. **SSH key file**: Use the `key_path` attribute or `IdentityFile` from SSH config
 4. **Default SSH keys**: If nothing is specified, tries keys from `~/.ssh/` in order:
    - `id_ed25519`
    - `id_ecdsa`
@@ -100,20 +99,6 @@ To disable host key verification (not recommended for production):
 provider "scp" {
   host            = "example.com"
   ignore_host_key = true
-}
-```
-
-### Implementation Selection
-
-The provider supports two implementations:
-
-- **sftp** (default): Uses `pkg/sftp` library. More lightweight and focused.
-- **rig**: Uses `k0sproject/rig v2` library. More comprehensive, supports additional features.
-
-```hcl
-provider "scp" {
-  host           = "example.com"
-  implementation = "rig"  # Use rig implementation
 }
 ```
 
@@ -197,10 +182,15 @@ Both `scp_file` and `scp_sensitive_file` resources support the following:
 
 ## Drift Detection
 
-The provider automatically detects changes to remote files made outside of Terraform. When a file's content changes (detected via SHA1 checksum comparison), the provider will:
+The provider automatically detects changes to remote files made outside of Terraform:
+
+- **Content drift**: Detected via SHA1 checksum comparison
+- **Permission drift**: Detected by comparing actual file mode with configured `file_permission`
+
+When drift is detected, the provider will:
 
 1. Remove the resource from state during refresh
-2. Recreate the file with the expected content during the next apply
+2. Recreate the file with the expected content and permissions during the next apply
 
 This ensures that the remote file always matches the desired state in your Terraform configuration.
 
@@ -226,12 +216,12 @@ TF_ACC=1 TEST_SSH_HOST=localhost TEST_SSH_PORT=22 TEST_SSH_USER=testuser TEST_SS
 
 ### Architecture
 
-The provider uses a pluggable remote client interface that allows different implementations:
+The provider uses a clean separation between Terraform plugin code and SSH/SFTP logic:
 
-- `internal/remote/interface.go` - Defines the `Client` interface
+- `internal/provider/` - Terraform provider implementation (resources, schema, CRUD operations)
+- `internal/remote/interface.go` - Defines the `Client` interface and `FileInfo` struct
 - `internal/remote/sftp.go` - SFTP implementation using pkg/sftp
-- `internal/remote/rig.go` - Rig implementation using k0sproject/rig v2
-- `internal/remote/sshconfig.go` - SSH config file parser
+- `internal/remote/sshconfig.go` - SSH config file parser with first-match semantics
 
 ## License
 
