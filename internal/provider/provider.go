@@ -29,12 +29,17 @@ var (
 	_ provider.Provider = (*scpProvider)(nil)
 )
 
-func New() provider.Provider {
-	return &scpProvider{}
+func New(version string) func() provider.Provider {
+	return func() provider.Provider {
+		return &scpProvider{
+			version: version,
+		}
+	}
 }
 
 type scpProvider struct {
-	config *scpProviderConfig
+	version string
+	config  *scpProviderConfig
 }
 
 type scpProviderConfig struct {
@@ -63,6 +68,7 @@ type scpProviderModel struct {
 
 func (p *scpProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
 	resp.TypeName = "scp"
+	resp.Version = p.version
 }
 
 func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
