@@ -211,7 +211,6 @@ func TestNewClient(t *testing.T) {
 		t.Error("Expected *SFTPClient for default implementation")
 	}
 
-	config.Implementation = "sftp"
 	client, err = NewClient(config)
 	if err != nil {
 		t.Fatalf("NewClient (sftp) failed: %v", err)

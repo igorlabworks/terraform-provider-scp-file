@@ -191,13 +191,11 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 		KeyPath:        keyPath,
 		KnownHostsPath: knownHostsPath,
 		IgnoreHostKey:  false,
-		Implementation: implementation,
 	}
 }
 
 func getTestSSHConfigWithImplementation(t *testing.T, impl string) *scpProviderConfig {
 	t.Helper()
 	config := getTestSSHConfig(t)
-	config.Implementation = impl
 	return config
 }

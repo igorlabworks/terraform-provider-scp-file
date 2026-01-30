@@ -21,8 +21,7 @@ import (
 )
 
 const (
-	defaultSSHPort        = 22
-	defaultImplementation = "sftp"
+	defaultSSHPort = 22
 )
 
 var (
@@ -51,7 +50,6 @@ type scpProviderConfig struct {
 	KnownHostsPath string
 	IgnoreHostKey  bool
 	SSHConfigPath  string
-	Implementation string
 }
 
 type scpProviderModel struct {
@@ -63,7 +61,6 @@ type scpProviderModel struct {
 	KnownHostsPath types.String `tfsdk:"known_hosts_path"`
 	IgnoreHostKey  types.Bool   `tfsdk:"ignore_host_key"`
 	SSHConfigPath  types.String `tfsdk:"ssh_config_path"`
-	Implementation types.String `tfsdk:"implementation"`
 }
 
 func (p *scpProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -85,11 +82,6 @@ func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		port = int(config.Port.ValueInt64())
 	}
 
-	implementation := defaultImplementation
-	if !config.Implementation.IsNull() && !config.Implementation.IsUnknown() {
-		implementation = config.Implementation.ValueString()
-	}
-
 	p.config = &scpProviderConfig{
 		Host:           config.Host.ValueString(),
 		Port:           port,
@@ -99,7 +91,6 @@ func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		KnownHostsPath: config.KnownHostsPath.ValueString(),
 		IgnoreHostKey:  config.IgnoreHostKey.ValueBool(),
 		SSHConfigPath:  config.SSHConfigPath.ValueString(),
-		Implementation: implementation,
 	}
 
 	resp.ResourceData = p.config
@@ -122,33 +113,33 @@ func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 		Attributes: map[string]schema.Attribute{
 			"host": schema.StringAttribute{
 				Description: "The hostname or IP address of the remote SSH server. " +
-					"Can also be a host alias defined in ~/.ssh/config.",
+					"Can also be a host alias defined in `~/.ssh/config`.",
 				Required: true,
 			},
 			"port": schema.Int64Attribute{
 				Description: "The port of the remote SSH server. Defaults to 22. " +
-					"Can be overridden by ~/.ssh/config settings.",
+					"Can be overridden by `~/.ssh/config` settings.",
 				Optional: true,
 			},
 			"user": schema.StringAttribute{
 				Description: "The username for SSH authentication. " +
-					"Can be overridden by ~/.ssh/config settings.",
+					"Can be overridden by `~/.ssh/config` settings.",
 				Optional: true,
 			},
 			"password": schema.StringAttribute{
-				Description: "The password for SSH authentication. Conflicts with key_path.",
+				Description: "The password for SSH authentication. Conflicts with `key_path`.",
 				Optional:    true,
 				Sensitive:   true,
 			},
 			"key_path": schema.StringAttribute{
 				Description: "The path to the SSH private key for authentication. " +
-					"Supports ~ expansion. Can be overridden by ~/.ssh/config IdentityFile directive. " +
-					"If not specified, default keys from ~/.ssh/ will be tried.",
+					"Supports ~ expansion. Can be overridden by `~/.ssh/config` IdentityFile directive. " +
+					"If not specified, default keys from `~/.ssh/` will be tried.",
 				Optional: true,
 			},
 			"known_hosts_path": schema.StringAttribute{
 				Description: "The path to the known_hosts file for host key verification. " +
-					"Defaults to ~/.ssh/known_hosts. Supports ~ expansion.",
+					"Defaults to `~/.ssh/known_hosts`. Supports `~` expansion.",
 				Optional: true,
 			},
 			"ignore_host_key": schema.BoolAttribute{
@@ -159,14 +150,8 @@ func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 			},
 			"ssh_config_path": schema.StringAttribute{
 				Description: "The path to the SSH config file. " +
-					"Defaults to ~/.ssh/config. Supports ~ expansion. " +
+					"Defaults to `~/.ssh/config`. Supports `~` expansion. " +
 					"The provider will read User, Hostname, Port, and IdentityFile directives.",
-				Optional: true,
-			},
-			"implementation": schema.StringAttribute{
-				Description: "The implementation to use for remote file operations. " +
-					"Valid values are 'sftp' (default) or 'rig'. " +
-					"The 'sftp' implementation uses pkg/sftp, while 'rig' uses k0sproject/rig v2.",
 				Optional: true,
 			},
 		},
@@ -208,7 +193,6 @@ func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
 		KnownHostsPath: config.KnownHostsPath,
 		IgnoreHostKey:  config.IgnoreHostKey,
 		SSHConfigPath:  config.SSHConfigPath,
-		Implementation: config.Implementation,
 	})
 }
 

@@ -1,5 +1,6 @@
 # Build artifacts
 terraform-provider-scp
+terraform-provider-scp_v*
 *.exe
 *.dll
 *.so
@@ -40,6 +41,7 @@ Thumbs.db
 *.tmp
 *.log
 
+/docs/
 bin/
 dist/
 modules-dev/

@@ -28,7 +28,6 @@ type Config struct {
 	KnownHostsPath string
 	IgnoreHostKey  bool
 	SSHConfigPath  string
-	Implementation string
 }
 
 type HostKeyError struct {
@@ -48,10 +47,5 @@ func (e *HostKeyError) Unwrap() error {
 }
 
 func NewClient(config *Config) (Client, error) {
-	switch config.Implementation {
-	case "sftp", "":
-		return NewSFTPClient(config)
-	default:
-		return NewSFTPClient(config)
-	}
+	return NewSFTPClient(config)
 }

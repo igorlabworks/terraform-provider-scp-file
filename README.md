@@ -1,18 +1,18 @@
 # Terraform Provider for SCP File Transfer
 
-This Terraform provider enables managing files on remote hosts via SCP/SFTP. It provides the same interface as the [hashicorp/local](https://registry.terraform.io/providers/hashicorp/local/latest) provider for `local_file` and `local_sensitive_file` resources, but transfers files to a remote destination instead of the local filesystem.
+This Terraform provider enables managing files on remote hosts via SCP/SFTP. It aims to provide the same interface as the [hashicorp/local](https://registry.terraform.io/providers/hashicorp/local/latest) provider for `local_file` and `local_sensitive_file` resources, but transfers files to a remote destination instead of the local filesystem.
 
 ## Features
 
 - **Similar interface to local provider**: Uses the same schema as `local_file` and `local_sensitive_file`
 - **Remote file management**: Creates, updates, and deletes files on remote hosts via SFTP
 - **Drift detection**: Automatically detects when remote files have been modified externally (content or permissions) and reconciles state
-- **Multiple content sources**: Supports content, content_base64, sensitive_content, and source file
+- **Multiple content sources**: Supports content, content_base64, and source file
 - **File and directory permissions**: Configure file and directory permissions with proper enforcement
 - **Checksum attributes**: Provides MD5, SHA1, SHA256, and SHA512 checksums
-- **SSH config support**: Reads `~/.ssh/config` for User, Hostname, Port, and IdentityFile directives (with proper first-match semantics)
+- **SSH config support**: Reads `~/.ssh/config` for `User`, `Hostname`, `Port`, and `IdentityFile` directives
 - **SSH agent support**: Automatically uses SSH agent when available
-- **Host key verification**: Uses known_hosts file for host key verification with helpful error messages
+- **Host key verification**: Uses `known_hosts` file for host key verification with helpful error messages
 
 ## Requirements
 
@@ -35,14 +35,14 @@ go build -o terraform-provider-scp
 
 ```hcl
 provider "scp" {
-  host             = "example.com"      # Required: hostname, IP, or SSH config alias
-  port             = 22                 # Optional, defaults to 22
-  user             = "username"         # Optional, can be set via ~/.ssh/config
-  password         = "password"         # Optional, for password auth
-  key_path         = "~/.ssh/id_rsa"    # Optional, for key-based auth
-  ssh_config_path  = "~/.ssh/config"    # Optional, path to SSH config file
+  host             = "example.com"        # Required: hostname, IP, or SSH config alias
+  port             = 22                   # Optional, defaults to 22
+  user             = "username"           # Optional, can be set via ~/.ssh/config
+  password         = "password"           # Optional, for password auth
+  key_path         = "~/.ssh/id_rsa"      # Optional, for key-based auth
+  ssh_config_path  = "~/.ssh/config"      # Optional, path to SSH config file
   known_hosts_path = "~/.ssh/known_hosts" # Optional, path to known_hosts file
-  ignore_host_key  = false              # Optional, skip host key verification (insecure)
+  ignore_host_key  = false                # Optional, skip host key verification (insecure)
 }
 ```
 
@@ -70,6 +70,7 @@ The provider reads `~/.ssh/config` and supports the following directives:
 - `IdentityFile` - Path to SSH private key
 
 Example `~/.ssh/config`:
+
 ```
 Host myserver
     Hostname actual.server.com
@@ -79,6 +80,7 @@ Host myserver
 ```
 
 Then in Terraform:
+
 ```hcl
 provider "scp" {
   host = "myserver"  # Uses settings from SSH config
@@ -95,6 +97,7 @@ example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...
 ```
 
 To disable host key verification (not recommended for production):
+
 ```hcl
 provider "scp" {
   host            = "example.com"
@@ -104,7 +107,7 @@ provider "scp" {
 
 ### Resources
 
-#### scp_file
+#### `scp_file`
 
 Creates a file on a remote host with the given content.
 
@@ -144,7 +147,7 @@ resource "scp_file" "script" {
 }
 ```
 
-#### scp_sensitive_file
+#### `scp_sensitive_file`
 
 Creates a file on a remote host with sensitive content. The content will not be displayed in Terraform plan output.
 
@@ -199,17 +202,19 @@ This ensures that the remote file always matches the desired state in your Terra
 ### Building
 
 ```bash
-go build -o terraform-provider-scp-file
+just build
 ```
 
 ### Testing
 
 Run unit tests:
+
 ```bash
-go test -v ./...
+just test
 ```
 
 Run acceptance tests (requires SSH server):
+
 ```bash
 TF_ACC=1 TEST_SSH_HOST=localhost TEST_SSH_PORT=22 TEST_SSH_USER=testuser TEST_SSH_PASSWORD=testpass go test -v ./internal/provider/...
 ```
