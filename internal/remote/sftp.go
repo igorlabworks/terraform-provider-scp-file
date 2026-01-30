@@ -28,6 +28,7 @@ type SFTPClient struct {
 	config     *Config
 	sshClient  *ssh.Client
 	sftpClient *sftp.Client
+	agentConn  net.Conn
 }
 
 func NewSFTPClient(config *Config) (*SFTPClient, error) {
@@ -119,6 +120,10 @@ func (c *SFTPClient) Close() error {
 		c.sftpClient.Close()
 		c.sftpClient = nil
 	}
+	if c.agentConn != nil {
+		c.agentConn.Close()
+		c.agentConn = nil
+	}
 	if c.sshClient != nil {
 		err := c.sshClient.Close()
 		c.sshClient = nil
@@ -128,7 +133,7 @@ func (c *SFTPClient) Close() error {
 }
 
 func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.FileMode, dirMode os.FileMode) error {
-	if err := c.sftpClient.MkdirAll(filepath.Dir(remotePath)); err != nil {
+	if err := c.mkdirAllWithMode(filepath.Dir(remotePath), dirMode); err != nil {
 		return fmt.Errorf("failed to create remote directory %s: %w", filepath.Dir(remotePath), err)
 	}
 
@@ -144,6 +149,33 @@ func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.Fi
 
 	if err := c.sftpClient.Chmod(remotePath, fileMode); err != nil {
 		return fmt.Errorf("failed to set permissions on remote file %s: %w", remotePath, err)
+	}
+
+	return nil
+}
+
+func (c *SFTPClient) mkdirAllWithMode(remotePath string, mode os.FileMode) error {
+	// Split path into components
+	parts := []string{}
+	current := remotePath
+	for current != "/" && current != "." {
+		parts = append([]string{current}, parts...)
+		current = filepath.Dir(current)
+	}
+
+	// Create each directory if it doesn't exist
+	for _, dir := range parts {
+		_, err := c.sftpClient.Stat(dir)
+		if err != nil {
+			// Directory doesn't exist, create it
+			if err := c.sftpClient.Mkdir(dir); err != nil {
+				return err
+			}
+			// Apply permissions
+			if err := c.sftpClient.Chmod(dir, mode); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -167,6 +199,17 @@ func (c *SFTPClient) ReadFile(remotePath string) ([]byte, error) {
 func (c *SFTPClient) FileExists(remotePath string) (bool, error) {
 	_, err := c.sftpClient.Stat(remotePath)
 	return err == nil, nil
+}
+
+func (c *SFTPClient) GetFileInfo(remotePath string) (*FileInfo, error) {
+	info, err := c.sftpClient.Stat(remotePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat remote file %s: %w", remotePath, err)
+	}
+	return &FileInfo{
+		Mode: info.Mode(),
+		Size: info.Size(),
+	}, nil
 }
 
 func (c *SFTPClient) DeleteFile(remotePath string) error {
@@ -209,6 +252,7 @@ func (c *SFTPClient) loadSSHAgent() ssh.AuthMethod {
 		return nil
 	}
 
+	c.agentConn = conn
 	agentClient := agent.NewClient(conn)
 	return ssh.PublicKeysCallback(agentClient.Signers)
 }

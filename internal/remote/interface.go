@@ -4,6 +4,11 @@ import (
 	"os"
 )
 
+type FileInfo struct {
+	Mode os.FileMode
+	Size int64
+}
+
 type Client interface {
 	Connect() error
 	Close() error
@@ -11,6 +16,7 @@ type Client interface {
 	ReadFile(remotePath string) ([]byte, error)
 	FileExists(remotePath string) (bool, error)
 	DeleteFile(remotePath string) error
+	GetFileInfo(remotePath string) (*FileInfo, error)
 }
 
 type Config struct {

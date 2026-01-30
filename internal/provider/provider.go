@@ -268,6 +268,20 @@ func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
 	return client.DeleteFile(remotePath)
 }
 
+func getRemoteFileInfo(config *scpProviderConfig, remotePath string) (*remote.FileInfo, error) {
+	client, err := createRemoteClient(config)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	if err := client.Connect(); err != nil {
+		return nil, err
+	}
+
+	return client.GetFileInfo(remotePath)
+}
+
 func parseFilePermissions(permStr string) os.FileMode {
 	perm, _ := strconv.ParseInt(permStr, 8, 64)
 	return os.FileMode(perm)

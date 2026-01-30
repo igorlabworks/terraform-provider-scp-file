@@ -235,6 +235,21 @@ func (r *scpSensitiveFileResource) Read(ctx context.Context, req resource.ReadRe
 		resp.State.RemoveResource(ctx)
 		return
 	}
+
+	// Check if file permissions match
+	fileInfo, err := getRemoteFileInfo(r.config, state.Filename.ValueString())
+	if err != nil {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	expectedPerm := parseFilePermissions(state.FilePermission.ValueString())
+	actualPerm := fileInfo.Mode & os.ModePerm
+	if actualPerm != expectedPerm {
+		// Permissions don't match - trigger recreation
+		resp.State.RemoveResource(ctx)
+		return
+	}
 }
 
 func (r *scpSensitiveFileResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
