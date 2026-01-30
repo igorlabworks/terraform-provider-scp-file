@@ -21,7 +21,7 @@ import (
 
 func protoV5ProviderFactories() map[string]func() (tfprotov5.ProviderServer, error) {
 	return map[string]func() (tfprotov5.ProviderServer, error){
-		"scp": providerserver.NewProtocol5WithError(New()),
+		"scp": providerserver.NewProtocol5WithError(New("test")),
 	}
 }
 

@@ -43,8 +43,6 @@ func (e *HostKeyError) Unwrap() error {
 
 func NewClient(config *Config) (Client, error) {
 	switch config.Implementation {
-	case "rig":
-		return NewRigClient(config)
 	case "sftp", "":
 		return NewSFTPClient(config)
 	default:

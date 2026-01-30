@@ -22,7 +22,7 @@ func main() {
 	flag.Parse()
 
 	err := providerserver.Serve(context.Background(), provider.New(version), providerserver.ServeOpts{
-		Address: "registry.terraform.io/igorlabworks/scp-file",
+		Address: "registry.terraform.io/igorlabworks/scp",
 		Debug:   debug,
 	})
 	if err != nil {

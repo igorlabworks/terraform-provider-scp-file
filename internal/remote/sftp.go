@@ -170,8 +170,7 @@ func (c *SFTPClient) FileExists(remotePath string) (bool, error) {
 }
 
 func (c *SFTPClient) DeleteFile(remotePath string) error {
-	c.sftpClient.Remove(remotePath)
-	return nil
+	return c.sftpClient.Remove(remotePath)
 }
 
 func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {

@@ -211,18 +211,18 @@ func TestNewClient(t *testing.T) {
 		t.Error("Expected *SFTPClient for default implementation")
 	}
 
-	config.Implementation = "rig"
+	config.Implementation = "sftp"
 	client, err = NewClient(config)
 	if err != nil {
-		t.Fatalf("NewClient (rig) failed: %v", err)
+		t.Fatalf("NewClient (sftp) failed: %v", err)
 	}
 	if client == nil {
 		t.Fatal("Expected non-nil client")
 	}
 
-	_, ok = client.(*RigClient)
+	_, ok = client.(*SFTPClient)
 	if !ok {
-		t.Error("Expected *RigClient for 'rig' implementation")
+		t.Error("Expected *SFTPClient for 'sftp' implementation")
 	}
 }
 
