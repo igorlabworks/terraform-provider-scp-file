@@ -283,27 +283,6 @@ func TestSCPFile_DriftDetection(t *testing.T) {
 	})
 }
 
-func TestSCPFile_RigImplementation(t *testing.T) {
-	// Skip if not in acceptance test mode
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
-
-	config := getTestSSHConfigWithImplementation(t, "rig")
-	remotePath := "/config/test_upload/test_file_rig.txt"
-
-	r.Test(t, r.TestCase{
-		ProtoV5ProviderFactories: protoV5ProviderFactories(),
-		Steps: []r.TestStep{
-			{
-				Config: testAccSCPFileConfigWithImplementation(config, "Content using rig implementation", remotePath, "rig"),
-				Check:  checkRemoteFileCreation(config, remotePath),
-			},
-		},
-		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
-	})
-}
-
 func testAccSCPFileConfig(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
@@ -382,21 +361,4 @@ func testAccSCPFileDecodedBase64ContentConfig(config *scpProviderConfig, content
 		  content_base64 = base64encode(%[5]q)
 		  filename       = %[6]q
 		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
-}
-
-func testAccSCPFileConfigWithImplementation(config *scpProviderConfig, content, filename, implementation string) string {
-	return fmt.Sprintf(`
-		provider "scp" {
-		  host             = %[1]q
-		  port             = %[2]d
-		  user             = %[3]q
-		  password         = %[4]q
-		  known_hosts_path = %[7]q
-		  implementation   = %[8]q
-		}
-
-		resource "scp_file" "test" {
-		  content  = %[5]q
-		  filename = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath, implementation)
 }

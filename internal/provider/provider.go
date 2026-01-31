@@ -50,6 +50,10 @@ type scpProviderConfig struct {
 	KnownHostsPath string
 	IgnoreHostKey  bool
 	SSHConfigPath  string
+
+	// Test-only fields for connection retry behavior
+	ConnectionRetries        int // 0 uses default (3)
+	ConnectionRetryBaseDelay int // milliseconds, 0 uses default (500ms)
 }
 
 type scpProviderModel struct {
@@ -82,15 +86,26 @@ func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		port = int(config.Port.ValueInt64())
 	}
 
+	// For acceptance tests, allow configuring retry behavior via environment variables
+	connectionRetries := 0        // 0 means use default (3)
+	connectionRetryBaseDelay := 0 // 0 means use default (500ms)
+	if os.Getenv("TF_ACC") != "" {
+		// In acceptance test mode, use more aggressive retry settings
+		connectionRetries = 6
+		connectionRetryBaseDelay = 2000 // 2s base delay
+	}
+
 	p.config = &scpProviderConfig{
-		Host:           config.Host.ValueString(),
-		Port:           port,
-		User:           config.User.ValueString(),
-		Password:       config.Password.ValueString(),
-		KeyPath:        config.KeyPath.ValueString(),
-		KnownHostsPath: config.KnownHostsPath.ValueString(),
-		IgnoreHostKey:  config.IgnoreHostKey.ValueBool(),
-		SSHConfigPath:  config.SSHConfigPath.ValueString(),
+		Host:                     config.Host.ValueString(),
+		Port:                     port,
+		User:                     config.User.ValueString(),
+		Password:                 config.Password.ValueString(),
+		KeyPath:                  config.KeyPath.ValueString(),
+		KnownHostsPath:           config.KnownHostsPath.ValueString(),
+		IgnoreHostKey:            config.IgnoreHostKey.ValueBool(),
+		SSHConfigPath:            config.SSHConfigPath.ValueString(),
+		ConnectionRetries:        connectionRetries,
+		ConnectionRetryBaseDelay: connectionRetryBaseDelay,
 	}
 
 	resp.ResourceData = p.config
@@ -185,14 +200,16 @@ func genFileChecksums(data []byte) fileChecksums {
 
 func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
 	return remote.NewClient(&remote.Config{
-		Host:           config.Host,
-		Port:           config.Port,
-		User:           config.User,
-		Password:       config.Password,
-		KeyPath:        config.KeyPath,
-		KnownHostsPath: config.KnownHostsPath,
-		IgnoreHostKey:  config.IgnoreHostKey,
-		SSHConfigPath:  config.SSHConfigPath,
+		Host:                     config.Host,
+		Port:                     config.Port,
+		User:                     config.User,
+		Password:                 config.Password,
+		KeyPath:                  config.KeyPath,
+		KnownHostsPath:           config.KnownHostsPath,
+		IgnoreHostKey:            config.IgnoreHostKey,
+		SSHConfigPath:            config.SSHConfigPath,
+		ConnectionRetries:        config.ConnectionRetries,
+		ConnectionRetryBaseDelay: config.ConnectionRetryBaseDelay,
 	})
 }
 

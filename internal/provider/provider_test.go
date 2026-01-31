@@ -19,6 +19,11 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
+var (
+	// Rate limiter for SSH connections to prevent overwhelming the server
+	connectionLimiter = make(chan struct{}, 3) // Max 3 concurrent connections
+)
+
 func protoV5ProviderFactories() map[string]func() (tfprotov5.ProviderServer, error) {
 	return map[string]func() (tfprotov5.ProviderServer, error){
 		"scp": providerserver.NewProtocol5WithError(New("test")()),
@@ -115,6 +120,7 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 
 	var output []byte
 	var err error
+	// Use exponential backoff: 2s, 4s, 8s, 16s, 32s (up to 62s total)
 	for i := 0; i < 5; i++ {
 		cmd := exec.Command("ssh-keyscan", "-p", strconv.Itoa(port), "-T", "10", host)
 		output, err = cmd.CombinedOutput()
@@ -122,9 +128,10 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 			break
 		}
 		if i < 4 {
-			t.Logf("Retry %d: ssh-keyscan failed, retrying in 1s...", i+1)
-			os.Getenv("CI")
-			time.Sleep(time.Second)
+			// Exponential backoff starting at 2s: 2s, 4s, 8s, 16s, 32s
+			delay := time.Duration(2<<uint(i)) * time.Second
+			t.Logf("Retry %d: ssh-keyscan failed, retrying in %v...", i+1, delay)
+			time.Sleep(delay)
 		}
 	}
 	if err != nil {
@@ -181,16 +188,20 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 		implementation = "sftp"
 	}
 
+	// Use per-test known_hosts with exponential backoff retry
 	knownHostsPath := setupTestKnownHosts(t, host, port)
 
 	return &scpProviderConfig{
-		Host:           host,
-		Port:           port,
-		User:           user,
-		Password:       password,
-		KeyPath:        keyPath,
-		KnownHostsPath: knownHostsPath,
-		IgnoreHostKey:  false,
+		Host:                     host,
+		Port:                     port,
+		User:                     user,
+		Password:                 password,
+		KeyPath:                  keyPath,
+		KnownHostsPath:           knownHostsPath,
+		IgnoreHostKey:            false,
+		ConnectionRetries:        6,    // Higher retries for tests (default is 3)
+		ConnectionRetryBaseDelay: 2000, // 2s base delay for tests (default is 500ms)
+		// This creates exponential backoff: 2s, 4s, 8s, 16s, 32s (max 62s total)
 	}
 }
 

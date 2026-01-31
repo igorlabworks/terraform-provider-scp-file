@@ -29,6 +29,9 @@ The SSH server uses the `linuxserver/openssh-server` Docker image with:
 - **Username**: `testuser`
 - **Password**: `testpass`
 - **Home Directory**: `/config`
+- **MaxStartups**: 100:30:200 (to handle concurrent test connections)
+- **MaxSessions**: 100 (to prevent connection rate limiting)
+- **Home Directory**: `/config`
 
 ### Connection Details
 
@@ -58,12 +61,45 @@ steps:
         -e USER_PASSWORD=testpass \
         -e USER_NAME=testuser \
         linuxserver/openssh-server:latest
+      echo "Waiting for SSH server to start..."
+      sleep 3
+      echo "Configuring SSH server for higher connection limits..."
+      docker exec ssh-server sh -c 'echo "MaxStartups 100:30:200" >> /config/sshd/sshd_config'
+      docker exec ssh-server sh -c 'echo "MaxSessions 100" >> /config/sshd/sshd_config'
+      docker exec ssh-server pkill -HUP sshd || true
+      echo "SSH server configured and ready for testing"
+      sleep 2
 ```
 
 This approach works because:
+
 - The Copilot agent executes the setup steps
 - Docker is available in the GitHub Actions runner environment
 - The container persists for the duration of the agent's work
+- Configuration is applied after container startup to handle concurrent connections
+
+### CI/CD Configuration
+
+Both `test.yml` and `copilot-setup-steps.yml` workflows use the same SSH server setup:
+
+1. **Container Startup**: Docker container with OpenSSH server
+2. **Initial Delay**: 3-second wait for server initialization
+3. **Connection Limit Configuration**:
+   - MaxStartups 100:30:200 (allows up to 100 concurrent connection attempts)
+   - MaxSessions 100 (increases session limit)
+4. **Service Reload**: SIGHUP signal to apply configuration
+5. **Final Delay**: 2-second stabilization period
+
+### Test Configuration
+
+Acceptance tests run with special retry settings when `TF_ACC=1`:
+
+- **Connection Retries**: 6 attempts (vs 3 in production)
+- **Base Retry Delay**: 2000ms (vs 500ms in production)
+- **Exponential Backoff**: 2s, 4s, 8s, 16s, 32s (max 62s total)
+- **SSH Keyscan Retries**: 5 attempts with exponential backoff
+
+These settings are automatically enabled during acceptance tests and do not affect production behavior.
 
 ### Network Connectivity
 
@@ -78,6 +114,7 @@ From the GitHub documentation on firewall limitations:
 > The firewall only applies to processes started by the agent via its Bash tool. It does not apply to Model Context Protocol (MCP) servers or processes started in configured Copilot setup steps.
 
 This means:
+
 - Containers started in setup steps bypass firewall restrictions
 - The agent can freely connect to localhost:2222 for testing
 
@@ -92,12 +129,12 @@ steps:
   - name: Test SSH connection
     run: |
       sshpass -p testpass ssh -p 2222 testuser@localhost "echo 'Connection successful'"
-  
+
   - name: Test SCP upload
     run: |
       echo "test data" > test.txt
       sshpass -p testpass scp -P 2222 test.txt testuser@localhost:/config/test.txt
-  
+
   - name: Test SCP download
     run: |
       sshpass -p testpass scp -P 2222 testuser@localhost:/config/test.txt downloaded.txt

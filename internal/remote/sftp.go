@@ -98,9 +98,35 @@ func (c *SFTPClient) Connect() error {
 		port = defaultSSHPort
 	}
 
-	client, err := ssh.Dial("tcp", net.JoinHostPort(c.config.Host, strconv.Itoa(port)), sshConfig)
-	if err != nil {
-		return fmt.Errorf("failed to connect to SSH server %s: %w", net.JoinHostPort(c.config.Host, strconv.Itoa(port)), err)
+	addr := net.JoinHostPort(c.config.Host, strconv.Itoa(port))
+
+	// Retry connection with exponential backoff to handle transient failures
+	// Use configured values or defaults
+	maxRetries := c.config.ConnectionRetries
+	if maxRetries == 0 {
+		maxRetries = 3 // Default for production
+	}
+	baseDelayMs := c.config.ConnectionRetryBaseDelay
+	if baseDelayMs == 0 {
+		baseDelayMs = 500 // Default 500ms for production
+	}
+
+	var client *ssh.Client
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		client, lastErr = ssh.Dial("tcp", addr, sshConfig)
+		if lastErr == nil {
+			break
+		}
+		// On failure, retry with exponential backoff (except on last attempt)
+		if attempt < maxRetries-1 {
+			// Exponential backoff: baseDelay * 2^attempt
+			delay := time.Duration(baseDelayMs) * time.Millisecond * time.Duration(1<<uint(attempt))
+			time.Sleep(delay)
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("failed to connect to SSH server %s after %d attempts: %w", addr, maxRetries, lastErr)
 	}
 
 	c.sshClient = client

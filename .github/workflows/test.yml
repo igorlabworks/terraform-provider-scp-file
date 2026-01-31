@@ -39,7 +39,7 @@ jobs:
     name: Terraform Provider Acceptance Tests
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 130
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +73,14 @@ jobs:
             -e USER_PASSWORD=testpass \
             -e USER_NAME=testuser \
             linuxserver/openssh-server:latest
-          sleep 10
+          echo "Waiting for SSH server to start..."
+          sleep 3
+          echo "Configuring SSH server for higher connection limits..."
+          docker exec ssh-server sh -c 'echo "MaxStartups 100:30:200" >> /config/sshd/sshd_config'
+          docker exec ssh-server sh -c 'echo "MaxSessions 100" >> /config/sshd/sshd_config'
+          docker exec ssh-server pkill -HUP sshd || true
+          echo "SSH server configured and ready for testing"
+          sleep 2
       - name: Run acceptance tests
         env:
           TF_ACC: "1"
@@ -81,8 +88,8 @@ jobs:
           TEST_SSH_PORT: "2222"
           TEST_SSH_USER: "testuser"
           TEST_SSH_PASSWORD: "testpass"
-        run: go test -v -cover ./internal/provider/
-        timeout-minutes: 10
+        run: go test -v -cover -timeout 120m -parallel=1 ./...
+        timeout-minutes: 125
       - name: Stop SSH server
         if: always()
         run: docker stop ssh-server && docker rm ssh-server

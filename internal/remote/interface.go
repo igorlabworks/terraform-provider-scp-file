@@ -28,6 +28,16 @@ type Config struct {
 	KnownHostsPath string
 	IgnoreHostKey  bool
 	SSHConfigPath  string
+
+	// ConnectionRetries specifies the number of connection attempts.
+	// If 0, defaults to 3 for production use.
+	// Tests can set this higher (e.g., 6) for more resilience.
+	ConnectionRetries int
+
+	// ConnectionRetryBaseDelay is the base delay for exponential backoff.
+	// If 0, defaults to 500ms for production use.
+	// Tests can set this higher (e.g., 2s) for longer waits.
+	ConnectionRetryBaseDelay int // milliseconds
 }
 
 type HostKeyError struct {

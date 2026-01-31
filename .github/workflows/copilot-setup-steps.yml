@@ -77,6 +77,15 @@ jobs:
           docker logs ssh-server
           exit 1
 
+      - name: Configure SSH server connection limits
+        run: |
+          echo "Configuring SSH server for higher connection limits..."
+          docker exec ssh-server sh -c 'echo "MaxStartups 100:30:200" >> /config/sshd/sshd_config'
+          docker exec ssh-server sh -c 'echo "MaxSessions 100" >> /config/sshd/sshd_config'
+          docker exec ssh-server pkill -HUP sshd || true
+          echo "SSH server reconfigured with higher connection limits"
+          sleep 2
+
       - name: Install sshpass for testing
         run: sudo apt-get update && sudo apt-get install -y sshpass
 
