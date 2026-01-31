@@ -187,6 +187,15 @@ func getTestRemotePath(relativePath string) string {
 	return filepath.Join(getTestRootDir(), relativePath)
 }
 
+func createTestSSHConfig(t *testing.T, content string) string {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "ssh_config")
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatalf("Failed to write SSH config: %v", err)
+	}
+	return configPath
+}
+
 func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 	t.Helper()
 

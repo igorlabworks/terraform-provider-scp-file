@@ -285,6 +285,123 @@ func TestSCPFile_DriftDetection(t *testing.T) {
 	})
 }
 
+func TestAccSCPFile_SSHConfigHostAlias(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/ssh_config_alias.txt")
+
+	// SSH config resolves Hostname, User, and Port from the alias.
+	sshConfigPath := createTestSSHConfig(t, fmt.Sprintf(`Host testalias
+    Hostname %s
+    User %s
+    Port %d
+`, config.Host, config.User, config.Port))
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+					  host             = "testalias"
+					  password         = %[1]q
+					  known_hosts_path = %[2]q
+					  ssh_config_path  = %[3]q
+					  ignore_host_key  = true
+					}
+
+					resource "scp_file" "test" {
+					  content  = "ssh config alias test"
+					  filename = %[4]q
+					}`, config.Password, config.KnownHostsPath, sshConfigPath, remotePath),
+				Check: checkRemoteFileExists(config, remotePath),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
+func TestAccSCPFile_SSHConfigUserPort(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/ssh_config_user_port.txt")
+
+	// SSH config provides User via wildcard match; provider omits user.
+	sshConfigPath := createTestSSHConfig(t, fmt.Sprintf(`Host *
+    User %s
+`, config.User))
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+					  host             = %[1]q
+					  port             = %[2]d
+					  password         = %[3]q
+					  known_hosts_path = %[4]q
+					  ssh_config_path  = %[5]q
+					  ignore_host_key  = true
+					}
+
+					resource "scp_file" "test" {
+					  content  = "ssh config user test"
+					  filename = %[6]q
+					}`, config.Host, config.Port, config.Password, config.KnownHostsPath, sshConfigPath, remotePath),
+				Check: checkRemoteFileExists(config, remotePath),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
+func TestAccSCPFile_CustomSSHConfigPath(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/ssh_config_custom_path.txt")
+
+	// SSH config in a non-default location provides the User directive.
+	// If the provider correctly reads the custom path, User will be resolved
+	// and the connection will succeed.
+	sshConfigPath := createTestSSHConfig(t, fmt.Sprintf(`Host %s
+    User %s
+`, config.Host, config.User))
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+					  host             = %[1]q
+					  port             = %[2]d
+					  password         = %[3]q
+					  known_hosts_path = %[4]q
+					  ssh_config_path  = %[5]q
+					  ignore_host_key  = true
+					}
+
+					resource "scp_file" "test" {
+					  content  = "custom ssh config path test"
+					  filename = %[6]q
+					}`, config.Host, config.Port, config.Password, config.KnownHostsPath, sshConfigPath, remotePath),
+				Check: checkRemoteFileExists(config, remotePath),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
 func testAccSCPFileConfig(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {

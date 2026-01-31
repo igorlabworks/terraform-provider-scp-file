@@ -20,10 +20,6 @@ import (
 	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
 )
 
-const (
-	defaultSSHPort = 22
-)
-
 var (
 	_ provider.Provider = (*scpProvider)(nil)
 )
@@ -81,7 +77,7 @@ func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureReque
 		return
 	}
 
-	port := defaultSSHPort
+	var port int
 	if !config.Port.IsNull() && !config.Port.IsUnknown() {
 		port = int(config.Port.ValueInt64())
 	}
