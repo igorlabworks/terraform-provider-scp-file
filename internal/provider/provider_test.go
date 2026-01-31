@@ -37,7 +37,7 @@ func checkRemoteFileDeleted(config *scpProviderConfig, remotePath string) resour
 	}
 }
 
-func checkRemoteFileCreation(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
+func checkRemoteFileContent(config *scpProviderConfig, remotePath, resourceName string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		content, err := readRemoteFile(config, remotePath)
 		if err != nil {
@@ -45,19 +45,19 @@ func checkRemoteFileCreation(config *scpProviderConfig, remotePath string) resou
 		}
 		checkSums := genFileChecksums(content)
 
-		resource.TestCheckResourceAttr("scp_file.test", "content", string(content))
-		resource.TestCheckResourceAttr("scp_file.test", "content_md5", checkSums.md5Hex)
-		resource.TestCheckResourceAttr("scp_file.test", "content_sha1", checkSums.sha1Hex)
-		resource.TestCheckResourceAttr("scp_file.test", "content_sha256", checkSums.sha256Hex)
-		resource.TestCheckResourceAttr("scp_file.test", "content_base64sha256", checkSums.sha256Base64)
-		resource.TestCheckResourceAttr("scp_file.test", "content_sha512", checkSums.sha512Hex)
-		resource.TestCheckResourceAttr("scp_file.test", "content_base64sha512", checkSums.sha512Base64)
-
-		return nil
+		checks := resource.ComposeTestCheckFunc(
+			resource.TestCheckResourceAttr(resourceName, "content_md5", checkSums.md5Hex),
+			resource.TestCheckResourceAttr(resourceName, "content_sha1", checkSums.sha1Hex),
+			resource.TestCheckResourceAttr(resourceName, "content_sha256", checkSums.sha256Hex),
+			resource.TestCheckResourceAttr(resourceName, "content_base64sha256", checkSums.sha256Base64),
+			resource.TestCheckResourceAttr(resourceName, "content_sha512", checkSums.sha512Hex),
+			resource.TestCheckResourceAttr(resourceName, "content_base64sha512", checkSums.sha512Base64),
+		)
+		return checks(s)
 	}
 }
 
-func checkRemoteFilePermissions(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
+func checkRemoteFileExists(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		exists, err := remoteFileExists(config, remotePath)
 		if err != nil {
@@ -105,11 +105,11 @@ func checkRemoteDirectoryHasPermissions(config *scpProviderConfig, remotePath st
 	}
 }
 
-func createSourceFile(sourceFilePath, sourceContent string) error {
+func createLocalSourceFile(sourceFilePath, sourceContent string) error {
 	return os.WriteFile(sourceFilePath, []byte(sourceContent), 0644)
 }
 
-func skipTestsWindows() func() (bool, error) {
+func skipIfWindows() func() (bool, error) {
 	return func() (bool, error) {
 		if runtime.GOOS == "windows" {
 			return true, nil

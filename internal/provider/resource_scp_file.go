@@ -198,7 +198,7 @@ func (r *scpFileResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	content, err := parseSCPFileContent(plan)
+	content, err := resolveSCPFileContent(plan)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Create SCP file error",
@@ -302,7 +302,7 @@ func (r *scpFileResource) Delete(ctx context.Context, req resource.DeleteRequest
 	}
 }
 
-func parseSCPFileContent(plan scpFileResourceModel) ([]byte, error) {
+func resolveSCPFileContent(plan scpFileResourceModel) ([]byte, error) {
 	if !plan.SensitiveContent.IsNull() {
 		return []byte(plan.SensitiveContent.ValueString()), nil
 	}

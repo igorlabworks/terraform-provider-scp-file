@@ -177,7 +177,7 @@ func (r *scpSensitiveFileResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	content, err := parseSCPSensitiveFileContent(plan)
+	content, err := resolveSCPSensitiveFileContent(plan)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Create SCP sensitive file error",
@@ -281,7 +281,7 @@ func (r *scpSensitiveFileResource) Delete(ctx context.Context, req resource.Dele
 	}
 }
 
-func parseSCPSensitiveFileContent(plan scpSensitiveFileResourceModel) ([]byte, error) {
+func resolveSCPSensitiveFileContent(plan scpSensitiveFileResourceModel) ([]byte, error) {
 	if !plan.ContentBase64.IsNull() {
 		return base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
 	}
