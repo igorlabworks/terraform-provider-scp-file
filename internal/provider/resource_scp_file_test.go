@@ -238,6 +238,37 @@ func TestSCPFile_Permissions(t *testing.T) {
 	})
 }
 
+func TestAccSCPFile_DefaultPermissions(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	// Use a unique path with directory to verify directory permission creation
+	remotePath := getTestRemotePath("test_upload/test_defaults/test_file_default_perms.txt")
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				SkipFunc: skipIfWindows(),
+				Config:   testAccSCPFileConfigNoPermissions(config, "test content for defaults", remotePath),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					// Verify file has default 0777 permissions
+					checkRemoteFileHasPermissions(config, remotePath, 0777),
+					// Verify parent directory has default 0777 permissions
+					checkRemoteDirectoryHasPermissions(config, remotePath, 0777),
+					// Verify Terraform state contains the default values
+					r.TestCheckResourceAttr("scp_file.test", "file_permission", "0777"),
+					r.TestCheckResourceAttr("scp_file.test", "directory_permission", "0777"),
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
 func TestSCPFile_DriftDetection(t *testing.T) {
 	// Skip if not in acceptance test mode
 	if os.Getenv("TF_ACC") == "" {
@@ -403,6 +434,22 @@ func TestAccSCPFile_CustomSSHConfigPath(t *testing.T) {
 }
 
 func testAccSCPFileConfig(config *scpProviderConfig, content, filename string) string {
+	return fmt.Sprintf(`
+		provider "scp" {
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
+		}
+
+		resource "scp_file" "test" {
+		  content  = %[5]q
+		  filename = %[6]q
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
+}
+
+func testAccSCPFileConfigNoPermissions(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
 		  host             = %[1]q
