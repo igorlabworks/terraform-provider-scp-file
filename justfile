@@ -21,11 +21,11 @@ generate:
 fmt:
   gofmt -s -w -e .
 
-test:
-  go test -v -cover -timeout=120s -parallel=10 ./...
+test *args="./...":
+  go test -v -cover -timeout=120s -parallel=10 {{args}}
 
-test-acc-docker:
-  TF_ACC=1 go test -count=1 -v -cover -timeout=10m ./...
+test-acc-docker *args="./...":
+  TF_ACC=1 go test -count=1 -v -cover -timeout=10m {{args}}
 
 test-host-up:
   docker run --rm -d \

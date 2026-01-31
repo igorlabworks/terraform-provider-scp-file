@@ -481,3 +481,121 @@ func testAccSCPFileDecodedBase64ContentConfig(config *scpProviderConfig, content
 		  filename       = %[6]q
 		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
 }
+
+func TestAccSCPFile_IgnoreHostKey(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	// Build config manually without setupTestKnownHosts since we want empty known_hosts
+	host := os.Getenv("TEST_SSH_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := 22
+	if portStr := os.Getenv("TEST_SSH_PORT"); portStr != "" {
+		_, _ = fmt.Sscanf(portStr, "%d", &port)
+	}
+	user := os.Getenv("TEST_SSH_USER")
+	if user == "" {
+		user = "testuser"
+	}
+	password := os.Getenv("TEST_SSH_PASSWORD")
+	if password == "" {
+		password = "testpass"
+	}
+
+	config := &scpProviderConfig{
+		Host:                     host,
+		Port:                     port,
+		User:                     user,
+		Password:                 password,
+		KnownHostsPath:           createEmptyKnownHostsFile(t),
+		IgnoreHostKey:            true, // This is the key setting for this test
+		ConnectionRetries:        6,
+		ConnectionRetryBaseDelay: 2000,
+	}
+
+	remotePath := getTestRemotePath("test_upload/test_ignore_host_key.txt")
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: testAccSCPFileIgnoreHostKeyConfig(config, "test content with ignored host key", remotePath),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					checkRemoteFileContent(config, remotePath, "scp_file.test"),
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
+func TestAccSCPFile_HostKeyNotFoundFailure(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	// Create a config with empty known_hosts and ignore_host_key = false (default)
+	host := os.Getenv("TEST_SSH_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := 22
+	if portStr := os.Getenv("TEST_SSH_PORT"); portStr != "" {
+		_, _ = fmt.Sscanf(portStr, "%d", &port)
+	}
+	user := os.Getenv("TEST_SSH_USER")
+	if user == "" {
+		user = "testuser"
+	}
+	password := os.Getenv("TEST_SSH_PASSWORD")
+	if password == "" {
+		password = "testpass"
+	}
+
+	// Use empty known_hosts file (no keys)
+	knownHostsPath := createEmptyKnownHostsFile(t)
+
+	config := &scpProviderConfig{
+		Host:                     host,
+		Port:                     port,
+		User:                     user,
+		Password:                 password,
+		KnownHostsPath:           knownHostsPath,
+		IgnoreHostKey:            false, // Explicitly set to false
+		ConnectionRetries:        6,
+		ConnectionRetryBaseDelay: 2000,
+	}
+
+	remotePath := getTestRemotePath("test_upload/test_host_key_fail.txt")
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config:      testAccSCPFileConfig(config, "this should fail", remotePath),
+				ExpectError: regexp.MustCompile(`host key not found`),
+			},
+		},
+	})
+}
+
+func testAccSCPFileIgnoreHostKeyConfig(config *scpProviderConfig, content, filename string) string {
+	return fmt.Sprintf(`
+		provider "scp" {
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
+		  ignore_host_key  = true
+		}
+
+		resource "scp_file" "test" {
+		  content  = %[5]q
+		  filename = %[6]q
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
+}

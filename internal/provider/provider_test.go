@@ -171,6 +171,17 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 	return knownHostsPath
 }
 
+// createEmptyKnownHostsFile creates an empty known_hosts file for testing scenarios
+// where host key verification should fail or be bypassed.
+func createEmptyKnownHostsFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(path, []byte{}, 0600); err != nil {
+		t.Fatalf("Failed to create empty known_hosts: %v", err)
+	}
+	return path
+}
+
 // getTestRootDir returns the root directory for test files on the remote server.
 // It can be configured with TEST_SSH_ROOT_DIR environment variable.
 // Default is /tmp/terraform-provider-scp-test to avoid accidentally modifying user files.

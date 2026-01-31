@@ -1,9 +1,11 @@
 package remote
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -16,6 +18,16 @@ QyNTUxOQAAACDuwIAWxbLVNx9Vu3MhstytlISPBAxdb83tJ0TOMVCf/QAAAKB5s06MebNO
 jAAAAAtzc2gtZWQyNTUxOQAAACDuwIAWxbLVNx9Vu3MhstytlISPBAxdb83tJ0TOMVCf/Q
 AAAEAVyOukUl4rwa/YynNf2uxI94OvgmQzNe8NdKgWxo0Gc+7AgBbFstU3H1W7cyGy3K2U
 hI8EDF1vze0nRM4xUJ/9AAAAHGlnb3JASWdvcnMtTWFjQm9vay1Qcm8ubG9jYWwB
+-----END OPENSSH PRIVATE KEY-----
+`
+
+// testED25519Key2 is a second throwaway ed25519 private key, used to test host key changes.
+const testED25519Key2 = `-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACC+QDZOmYDcALECdbeE+t/V3INo2Cvfp1LNhSKO4vatzAAAAJg8WH1CPFh9
+QgAAAAtzc2gtZWQyNTUxOQAAACC+QDZOmYDcALECdbeE+t/V3INo2Cvfp1LNhSKO4vatzA
+AAAEC5rcMnRdXG6GApIaXhxU7UBTufc6B5+nu7hbH3c7CZkL5ANk6ZgNwAsQJ1t4T639Xc
+g2jYK9+nUs2FIo7i9q3MAAAAEXRlc3QyQGV4YW1wbGUuY29tAQIDBA==
 -----END OPENSSH PRIVATE KEY-----
 `
 
@@ -598,5 +610,238 @@ func TestAuthMethodPrecedence(t *testing.T) {
 	}
 	if err.Error() == "no SSH authentication methods available" {
 		t.Error("Default keys should have been loaded as fallback, but no auth methods were found")
+	}
+}
+
+func TestHostKeyCallbackWithIgnoreHostKey(t *testing.T) {
+	client := &SFTPClient{
+		config: &Config{
+			IgnoreHostKey: true,
+		},
+	}
+
+	callback, err := client.createHostKeyCallback()
+	if err != nil {
+		t.Fatalf("createHostKeyCallback failed: %v", err)
+	}
+
+	// Parse a test key
+	signer, err := ssh.ParsePrivateKey([]byte(testED25519Key))
+	if err != nil {
+		t.Fatalf("Failed to parse test key: %v", err)
+	}
+
+	// The callback should accept any host/key combination without error
+	err = callback("example.com:22", &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}, signer.PublicKey())
+	if err != nil {
+		t.Errorf("Expected no error with IgnoreHostKey=true, got: %v", err)
+	}
+
+	// Try another host/key combination
+	signer2, err := ssh.ParsePrivateKey([]byte(testED25519Key2))
+	if err != nil {
+		t.Fatalf("Failed to parse second test key: %v", err)
+	}
+
+	err = callback("different.com:2222", &net.TCPAddr{IP: net.ParseIP("192.0.2.2"), Port: 2222}, signer2.PublicKey())
+	if err != nil {
+		t.Errorf("Expected no error with IgnoreHostKey=true, got: %v", err)
+	}
+}
+
+func TestCreateSSHDirectoryIfMissing(t *testing.T) {
+	tmpHome := t.TempDir()
+	knownHostsPath := filepath.Join(tmpHome, ".ssh", "known_hosts")
+
+	client := &SFTPClient{
+		config: &Config{
+			KnownHostsPath: knownHostsPath,
+			IgnoreHostKey:  false,
+		},
+	}
+
+	// .ssh directory shouldn't exist yet
+	sshDir := filepath.Join(tmpHome, ".ssh")
+	if _, err := os.Stat(sshDir); !os.IsNotExist(err) {
+		t.Fatal(".ssh directory should not exist yet")
+	}
+
+	_, err := client.createHostKeyCallback()
+	if err != nil {
+		t.Fatalf("createHostKeyCallback failed: %v", err)
+	}
+
+	// Verify .ssh directory was created with correct permissions
+	info, err := os.Stat(sshDir)
+	if err != nil {
+		t.Fatalf("Failed to stat .ssh directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error(".ssh should be a directory")
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Errorf("Expected .ssh permissions 0700, got %04o", info.Mode().Perm())
+	}
+
+	// Verify known_hosts file was created with correct permissions
+	info, err = os.Stat(knownHostsPath)
+	if err != nil {
+		t.Fatalf("Failed to stat known_hosts file: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("Expected known_hosts permissions 0600, got %04o", info.Mode().Perm())
+	}
+}
+
+func TestHostKeyNotFoundError(t *testing.T) {
+	tmpDir := t.TempDir()
+	knownHostsPath := filepath.Join(tmpDir, "known_hosts")
+
+	// Create empty known_hosts file
+	if err := os.WriteFile(knownHostsPath, []byte{}, 0600); err != nil {
+		t.Fatalf("Failed to create empty known_hosts: %v", err)
+	}
+
+	client := &SFTPClient{
+		config: &Config{
+			KnownHostsPath: knownHostsPath,
+			IgnoreHostKey:  false,
+		},
+	}
+
+	callback, err := client.createHostKeyCallback()
+	if err != nil {
+		t.Fatalf("createHostKeyCallback failed: %v", err)
+	}
+
+	// Parse a test key
+	signer, err := ssh.ParsePrivateKey([]byte(testED25519Key))
+	if err != nil {
+		t.Fatalf("Failed to parse test key: %v", err)
+	}
+
+	// Call the callback with a host not in known_hosts
+	hostname := "unknown.example.com:22"
+	err = callback(hostname, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}, signer.PublicKey())
+
+	// Should return a HostKeyError
+	if err == nil {
+		t.Fatal("Expected error for unknown host key, got nil")
+	}
+
+	hostKeyErr, ok := err.(*HostKeyError)
+	if !ok {
+		t.Fatalf("Expected *HostKeyError, got %T", err)
+	}
+
+	// Verify error contents
+	if hostKeyErr.Host != hostname {
+		t.Errorf("Expected Host '%s', got '%s'", hostname, hostKeyErr.Host)
+	}
+	if hostKeyErr.KeyType != "ssh-ed25519" {
+		t.Errorf("Expected KeyType 'ssh-ed25519', got '%s'", hostKeyErr.KeyType)
+	}
+	if hostKeyErr.KeyFingerprint == "" {
+		t.Error("KeyFingerprint should not be empty")
+	}
+	if hostKeyErr.KnownHostsLine == "" {
+		t.Error("KnownHostsLine should not be empty")
+	}
+
+	// Check error message content
+	errMsg := hostKeyErr.Error()
+	if !strings.Contains(errMsg, "host key not found") {
+		t.Errorf("Error message should contain 'host key not found', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, hostKeyErr.KeyType) {
+		t.Errorf("Error message should contain key type, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, hostKeyErr.KeyFingerprint) {
+		t.Errorf("Error message should contain key fingerprint, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, knownHostsPath) {
+		t.Errorf("Error message should contain known_hosts path, got: %s", errMsg)
+	}
+}
+
+func TestHostKeyChangedError(t *testing.T) {
+	tmpDir := t.TempDir()
+	knownHostsPath := filepath.Join(tmpDir, "known_hosts")
+
+	// Parse first test key
+	signer1, err := ssh.ParsePrivateKey([]byte(testED25519Key))
+	if err != nil {
+		t.Fatalf("Failed to parse first test key: %v", err)
+	}
+
+	// Create known_hosts with the first key
+	hostname := "example.com"
+	knownHostsLine := ssh.MarshalAuthorizedKey(signer1.PublicKey())
+	knownHostsContent := fmt.Sprintf("%s %s", hostname, string(knownHostsLine))
+	if err := os.WriteFile(knownHostsPath, []byte(knownHostsContent), 0600); err != nil {
+		t.Fatalf("Failed to write known_hosts: %v", err)
+	}
+
+	client := &SFTPClient{
+		config: &Config{
+			KnownHostsPath: knownHostsPath,
+			IgnoreHostKey:  false,
+		},
+	}
+
+	callback, err := client.createHostKeyCallback()
+	if err != nil {
+		t.Fatalf("createHostKeyCallback failed: %v", err)
+	}
+
+	// Parse second test key (different from the one in known_hosts)
+	signer2, err := ssh.ParsePrivateKey([]byte(testED25519Key2))
+	if err != nil {
+		t.Fatalf("Failed to parse second test key: %v", err)
+	}
+
+	// Call the callback with the same host but different key
+	err = callback(hostname+":22", &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}, signer2.PublicKey())
+
+	// Should return a HostKeyError
+	if err == nil {
+		t.Fatal("Expected error for changed host key, got nil")
+	}
+
+	hostKeyErr, ok := err.(*HostKeyError)
+	if !ok {
+		t.Fatalf("Expected *HostKeyError, got %T", err)
+	}
+
+	// Verify error contents
+	if !strings.Contains(hostKeyErr.Host, hostname) {
+		t.Errorf("Expected Host to contain '%s', got '%s'", hostname, hostKeyErr.Host)
+	}
+	if hostKeyErr.KeyType != "ssh-ed25519" {
+		t.Errorf("Expected KeyType 'ssh-ed25519', got '%s'", hostKeyErr.KeyType)
+	}
+	if hostKeyErr.KeyFingerprint == "" {
+		t.Error("KeyFingerprint should not be empty")
+	}
+	if hostKeyErr.KnownHostsLine == "" {
+		t.Error("KnownHostsLine should not be empty")
+	}
+
+	// Check error message content
+	errMsg := hostKeyErr.Error()
+	if !strings.Contains(errMsg, "host key has changed") {
+		t.Errorf("Error message should contain 'host key has changed', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "man-in-the-middle") {
+		t.Errorf("Error message should contain 'man-in-the-middle', got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, hostKeyErr.KeyType) {
+		t.Errorf("Error message should contain key type, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, hostKeyErr.KeyFingerprint) {
+		t.Errorf("Error message should contain key fingerprint, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, knownHostsPath) {
+		t.Errorf("Error message should contain known_hosts path, got: %s", errMsg)
 	}
 }
