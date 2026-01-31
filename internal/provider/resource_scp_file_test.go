@@ -18,7 +18,7 @@ func TestSCPFile_Basic(t *testing.T) {
 	}
 
 	config := getTestSSHConfig(t)
-	remotePath := "/config/test_upload/test_file_basic.txt"
+	remotePath := getTestRemotePath("test_upload/test_file_basic.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
@@ -50,7 +50,7 @@ func TestSCPFile_Content(t *testing.T) {
 	}
 
 	config := getTestSSHConfig(t)
-	remotePath := "/config/test_upload/test_file_content.txt"
+	remotePath := getTestRemotePath("test_upload/test_file_content.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
@@ -70,7 +70,7 @@ func TestSCPFile_SensitiveContent(t *testing.T) {
 	}
 
 	config := getTestSSHConfig(t)
-	remotePath := "/config/test_upload/test_file_sensitive.txt"
+	remotePath := getTestRemotePath("test_upload/test_file_sensitive.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
@@ -90,7 +90,7 @@ func TestSCPFile_Base64Content(t *testing.T) {
 	}
 
 	config := getTestSSHConfig(t)
-	remotePath := "/config/test_upload/test_file_base64.txt"
+	remotePath := getTestRemotePath("test_upload/test_file_base64.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
@@ -119,7 +119,7 @@ func TestSCPFile_Source(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	remotePath := "/config/test_upload/test_file_source.txt"
+	remotePath := getTestRemotePath("test_upload/test_file_source.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
@@ -139,7 +139,7 @@ func TestSCPFile_Validators(t *testing.T) {
 	}
 
 	config := getTestSSHConfig(t)
-	remotePath := "/config/test_upload/test_file_validators.txt"
+	remotePath := getTestRemotePath("test_upload/test_file_validators.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
@@ -188,7 +188,7 @@ func TestSCPFile_Permissions(t *testing.T) {
 	}
 
 	config := getTestSSHConfig(t)
-	remotePath := "/config/test_upload/test_file_permissions.txt"
+	remotePath := getTestRemotePath("test_upload/permissions_test/test_file_permissions.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
@@ -229,6 +229,8 @@ func TestSCPFile_Permissions(t *testing.T) {
 					}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
 				Check: r.ComposeTestCheckFunc(
 					checkRemoteFilePermissions(config, remotePath),
+					checkRemoteFileHasPermissions(config, remotePath, 0600),
+					checkRemoteDirectoryHasPermissions(config, remotePath, 0700),
 				),
 			},
 		},
@@ -243,7 +245,7 @@ func TestSCPFile_DriftDetection(t *testing.T) {
 	}
 
 	config := getTestSSHConfig(t)
-	remotePath := "/config/test_upload/test_file_drift.txt"
+	remotePath := getTestRemotePath("test_upload/test_file_drift.txt")
 
 	r.Test(t, r.TestCase{
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),

@@ -89,7 +89,6 @@ func (c *SFTPClient) Connect() error {
 			ssh.KeyAlgoRSASHA512,
 			ssh.KeyAlgoRSASHA256,
 			ssh.KeyAlgoRSA,
-			ssh.KeyAlgoDSA,
 		},
 	}
 
@@ -322,12 +321,9 @@ func (c *SFTPClient) createHostKeyCallback() (ssh.HostKeyCallback, error) {
 					KeyType:        key.Type(),
 					KeyFingerprint: ssh.FingerprintSHA256(key),
 					KnownHostsLine: knownhosts.Line([]string{hostname}, key),
-					Err: fmt.Errorf("host key has changed for %s. This could indicate a man-in-the-middle attack.\n"+
-						"Server presented key:\n"+
-						"  Type: %s\n"+
-						"  Fingerprint: %s\n"+
-						"  Key line: %s\n"+
-						"If you trust this new key, remove the old entry from %s and add the above line.",
+					Err: fmt.Errorf("host key has changed for %s; this could indicate a man-in-the-middle attack; "+
+						"server presented key: type=%s fingerprint=%s key_line=%s; "+
+						"if you trust this new key, remove the old entry from %s and add the above line",
 						hostname, key.Type(), ssh.FingerprintSHA256(key), knownhosts.Line([]string{hostname}, key), knownHostsPath),
 				}
 			}

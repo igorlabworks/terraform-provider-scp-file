@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -17,11 +16,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
-)
-
-var (
-	// Rate limiter for SSH connections to prevent overwhelming the server
-	connectionLimiter = make(chan struct{}, 3) // Max 3 concurrent connections
 )
 
 func protoV5ProviderFactories() map[string]func() (tfprotov5.ProviderServer, error) {
@@ -76,29 +70,43 @@ func checkRemoteFilePermissions(config *scpProviderConfig, remotePath string) re
 	}
 }
 
-func checkRemoteDirectoryPermissions(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
+func checkRemoteFileHasPermissions(config *scpProviderConfig, remotePath string, expectedPerm os.FileMode) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		exists, err := remoteFileExists(config, remotePath)
+		info, err := getRemoteFileInfo(config, remotePath)
 		if err != nil {
-			return fmt.Errorf("error checking remote file: %s", err)
+			return fmt.Errorf("error getting file info for %s: %s", remotePath, err)
 		}
-		if !exists {
-			return fmt.Errorf("remote file %s does not exist (directory may not have been created)", remotePath)
+
+		actualPerm := info.Mode.Perm()
+		if actualPerm != expectedPerm {
+			return fmt.Errorf("file %s has permissions %04o, expected %04o", remotePath, actualPerm, expectedPerm)
 		}
+
+		return nil
+	}
+}
+
+func checkRemoteDirectoryHasPermissions(config *scpProviderConfig, remotePath string, expectedPerm os.FileMode) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		// Get the directory path from the file path
+		dirPath := filepath.Dir(remotePath)
+
+		info, err := getRemoteFileInfo(config, dirPath)
+		if err != nil {
+			return fmt.Errorf("error getting directory info for %s: %s", dirPath, err)
+		}
+
+		actualPerm := info.Mode.Perm()
+		if actualPerm != expectedPerm {
+			return fmt.Errorf("directory %s has permissions %04o, expected %04o", dirPath, actualPerm, expectedPerm)
+		}
+
 		return nil
 	}
 }
 
 func createSourceFile(sourceFilePath, sourceContent string) error {
 	return os.WriteFile(sourceFilePath, []byte(sourceContent), 0644)
-}
-
-func checkDirExists(destinationFilePath string, isDirExist *bool) func() {
-	return func() {
-		if _, err := os.Stat(path.Dir(destinationFilePath)); !os.IsNotExist(err) {
-			*isDirExist = true
-		}
-	}
 }
 
 func skipTestsWindows() func() (bool, error) {
@@ -163,6 +171,22 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 	return knownHostsPath
 }
 
+// getTestRootDir returns the root directory for test files on the remote server.
+// It can be configured with TEST_SSH_ROOT_DIR environment variable.
+// Default is /tmp/terraform-provider-scp-test to avoid accidentally modifying user files.
+func getTestRootDir() string {
+	rootDir := os.Getenv("TEST_SSH_ROOT_DIR")
+	if rootDir == "" {
+		rootDir = "/tmp/terraform-provider-scp-test"
+	}
+	return rootDir
+}
+
+// getTestRemotePath builds a remote path for testing under the configured root directory.
+func getTestRemotePath(relativePath string) string {
+	return filepath.Join(getTestRootDir(), relativePath)
+}
+
 func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 	t.Helper()
 
@@ -172,7 +196,7 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 	}
 	port := 22
 	if portStr := os.Getenv("TEST_SSH_PORT"); portStr != "" {
-		fmt.Sscanf(portStr, "%d", &port)
+		_, _ = fmt.Sscanf(portStr, "%d", &port)
 	}
 	user := os.Getenv("TEST_SSH_USER")
 	if user == "" {
@@ -187,6 +211,7 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 	if implementation == "" {
 		implementation = "sftp"
 	}
+	_ = implementation // Implementation is read from env for future use
 
 	// Use per-test known_hosts with exponential backoff retry
 	knownHostsPath := setupTestKnownHosts(t, host, port)
@@ -201,12 +226,6 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 		IgnoreHostKey:            false,
 		ConnectionRetries:        6,    // Higher retries for tests (default is 3)
 		ConnectionRetryBaseDelay: 2000, // 2s base delay for tests (default is 500ms)
-		// This creates exponential backoff: 2s, 4s, 8s, 16s, 32s (max 62s total)
+		// This creates exponential backoff: 2s, 4s, 8s, 16s, 32s (max 62s total).
 	}
-}
-
-func getTestSSHConfigWithImplementation(t *testing.T, impl string) *scpProviderConfig {
-	t.Helper()
-	config := getTestSSHConfig(t)
-	return config
 }

@@ -216,8 +216,19 @@ just test
 Run acceptance tests (requires SSH server):
 
 ```bash
-TF_ACC=1 TEST_SSH_HOST=localhost TEST_SSH_PORT=22 TEST_SSH_USER=testuser TEST_SSH_PASSWORD=testpass go test -v ./internal/provider/...
+TF_ACC=1 TEST_SSH_HOST=localhost TEST_SSH_PORT=22 TEST_SSH_USER=testuser TEST_SSH_PASSWORD=testpass TEST_SSH_ROOT_DIR=/tmp/terraform-provider-scp-test go test -v ./internal/provider/...
 ```
+
+**Environment Variables for Testing:**
+
+- `TEST_SSH_HOST` - SSH server hostname (default: localhost)
+- `TEST_SSH_PORT` - SSH server port (default: 22)
+- `TEST_SSH_USER` - SSH username (default: testuser)
+- `TEST_SSH_PASSWORD` - SSH password
+- `TEST_SSH_KEY_PATH` - Path to SSH private key (alternative to password)
+- `TEST_SSH_ROOT_DIR` - Root directory for test files on remote server (default: `/tmp/terraform-provider-scp-test`)
+  - This prevents tests from accidentally modifying user files when run against a real server
+  - For the Docker test container, set to `/config`
 
 ### Architecture
 

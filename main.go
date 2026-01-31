@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	// version will be set by goreleaser at build time
+	// version will be set by goreleaser at build time.
 	version string = "dev"
 )
 
