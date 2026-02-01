@@ -172,25 +172,32 @@ func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 }
 
 type Result[T any] interface {
-	getValue() (T, error)
+	getValue() T
+	getError() error
 }
 
 type Error[T any] struct {
-	zero T
-	err  error
+	err error
 }
 
-func (r *Error[T]) getValue() (T, error) {
-	return r.zero, r.err
+func (r *Error[T]) getValue() T {
+	panic(r.err.Error())
+}
+
+func (r *Error[T]) getError() error {
+	return r.err
 }
 
 type Value[T any] struct {
 	value T
-	err   error
 }
 
-func (r *Value[T]) getValue() (T, error) {
-	return r.value, r.err
+func (r *Value[T]) getValue() T {
+	return r.value
+}
+
+func (r *Value[T]) getError() error {
+	return nil
 }
 
 type fileChecksums struct {
@@ -247,18 +254,14 @@ func withConnectedClient[T any](config *scpProviderConfig, fn func(remote.Client
 	return fn(client)
 }
 
-func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) Result[struct{}] {
+func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) error {
 	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
-		err := c.WriteFile(remotePath, content, fileMode, dirMode)
-		if err != nil {
-			return &Error[struct{}]{err: err}
-		}
-		return &Value[struct{}]{}
+		return &Error[struct{}]{err: c.WriteFile(remotePath, content, fileMode, dirMode)}
 	})
-	return result
+	return result.getError()
 }
 
-func readRemoteFile(config *scpProviderConfig, remotePath string) Result[[]byte] {
+func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error) {
 	result := withConnectedClient(config, func(c remote.Client) Result[[]byte] {
 		data, err := c.ReadFile(remotePath)
 		if err != nil {
@@ -266,10 +269,13 @@ func readRemoteFile(config *scpProviderConfig, remotePath string) Result[[]byte]
 		}
 		return &Value[[]byte]{value: data}
 	})
-	return result
+	if err := result.getError(); err != nil {
+		return nil, err
+	}
+	return result.getValue(), nil
 }
 
-func remoteFileExists(config *scpProviderConfig, remotePath string) Result[bool] {
+func remoteFileExists(config *scpProviderConfig, remotePath string) (bool, error) {
 	result := withConnectedClient(config, func(c remote.Client) Result[bool] {
 		exists, err := c.FileExists(remotePath)
 		if err != nil {
@@ -277,10 +283,13 @@ func remoteFileExists(config *scpProviderConfig, remotePath string) Result[bool]
 		}
 		return &Value[bool]{value: exists}
 	})
-	return result
+	if err := result.getError(); err != nil {
+		return false, err
+	}
+	return result.getValue(), nil
 }
 
-func getRemoteFileInfo(config *scpProviderConfig, remotePath string) Result[*remote.FileInfo] {
+func getRemoteFileInfo(config *scpProviderConfig, remotePath string) (*remote.FileInfo, error) {
 	result := withConnectedClient(config, func(c remote.Client) Result[*remote.FileInfo] {
 		info, err := c.GetFileInfo(remotePath)
 		if err != nil {
@@ -288,31 +297,26 @@ func getRemoteFileInfo(config *scpProviderConfig, remotePath string) Result[*rem
 		}
 		return &Value[*remote.FileInfo]{value: info}
 	})
-	return result
+	if err := result.getError(); err != nil {
+		return nil, err
+	}
+	return result.getValue(), nil
 }
 
-func deleteRemoteFile(config *scpProviderConfig, remotePath string) Result[struct{}] {
-	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
-		err := c.DeleteFile(remotePath)
-		if err != nil {
-			return &Error[struct{}]{err: err}
-		}
-		return &Value[struct{}]{}
+func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
+	result := withConnectedClient(config, func(c remote.Client) Result[*struct{}] {
+		return &Error[*struct{}]{err: c.DeleteFile(remotePath)}
 	})
-	return result
+	return result.getError()
 }
 
 // chmodRemoteFile changes the permissions of a remote file without modifying content.
 // Used in tests to simulate external permission modifications.
-func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileMode) Result[struct{}] {
-	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
-		err := c.Chmod(remotePath, mode)
-		if err != nil {
-			return &Error[struct{}]{err: err}
-		}
-		return &Value[struct{}]{}
+func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileMode) error {
+	result := withConnectedClient(config, func(c remote.Client) Result[*struct{}] {
+		return &Error[*struct{}]{err: c.Chmod(remotePath, mode)}
 	})
-	return result
+	return result.getError()
 }
 
 func parseFilePermissions(permStr string) os.FileMode {

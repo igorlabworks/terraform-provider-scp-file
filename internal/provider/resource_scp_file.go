@@ -222,7 +222,7 @@ func (r *scpFileResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString()).getValue()
+	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddWarning(
 			"Read SCP File Error",
@@ -239,7 +239,7 @@ func (r *scpFileResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	fileInfo, err := getRemoteFileInfo(r.config, state.Filename.ValueString()).getValue()
+	fileInfo, err := getRemoteFileInfo(r.config, state.Filename.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddWarning(
 			"Read SCP File Error",

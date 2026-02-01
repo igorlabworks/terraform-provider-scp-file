@@ -34,7 +34,7 @@ func TestWriteRemoteFile(t *testing.T) {
 		mock := &mockClient{}
 		withMockClient(t, mock)
 
-		_, err := writeRemoteFile(config, "/path/file.txt", []byte("content"), 0644, 0755).getValue()
+		err := writeRemoteFile(config, "/path/file.txt", []byte("content"), 0644, 0755)
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -61,7 +61,7 @@ func TestWriteRemoteFile(t *testing.T) {
 		mock := &mockClient{connectErr: errors.New("connection failed")}
 		withMockClient(t, mock)
 
-		_, err := writeRemoteFile(config, "/path/file.txt", []byte("content"), 0644, 0755).getValue()
+		err := writeRemoteFile(config, "/path/file.txt", []byte("content"), 0644, 0755)
 
 		if err == nil || !strings.Contains(err.Error(), "connection failed") {
 			t.Errorf("expected connection error, got: %v", err)
@@ -72,7 +72,7 @@ func TestWriteRemoteFile(t *testing.T) {
 		mock := &mockClient{writeErr: errors.New("write failed")}
 		withMockClient(t, mock)
 
-		_, err := writeRemoteFile(config, "/path/file.txt", []byte("content"), 0644, 0755).getValue()
+		err := writeRemoteFile(config, "/path/file.txt", []byte("content"), 0644, 0755)
 
 		if err == nil || !strings.Contains(err.Error(), "write failed") {
 			t.Errorf("expected write error, got: %v", err)
@@ -87,11 +87,12 @@ func TestReadRemoteFile(t *testing.T) {
 		mock := &mockClient{readResult: []byte("file contents")}
 		withMockClient(t, mock)
 
-		data, err := readRemoteFile(config, "/path/file.txt").getValue()
+		data, err := readRemoteFile(config, "/path/file.txt")
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+
 		if string(data) != "file contents" {
 			t.Errorf("data = %q, want %q", data, "file contents")
 		}
@@ -104,13 +105,10 @@ func TestReadRemoteFile(t *testing.T) {
 		mock := &mockClient{connectErr: errors.New("connection failed")}
 		withMockClient(t, mock)
 
-		data, err := readRemoteFile(config, "/path/file.txt").getValue()
+		_, err := readRemoteFile(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "connection failed") {
 			t.Errorf("expected connection error, got: %v", err)
-		}
-		if data != nil {
-			t.Errorf("expected nil data on error, got %v", data)
 		}
 	})
 
@@ -118,13 +116,10 @@ func TestReadRemoteFile(t *testing.T) {
 		mock := &mockClient{readErr: errors.New("read failed")}
 		withMockClient(t, mock)
 
-		data, err := readRemoteFile(config, "/path/file.txt").getValue()
+		_, err := readRemoteFile(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "read failed") {
 			t.Errorf("expected read error, got: %v", err)
-		}
-		if data != nil {
-			t.Errorf("expected nil data on error, got %v", data)
 		}
 	})
 }
@@ -136,7 +131,7 @@ func TestRemoteFileExists(t *testing.T) {
 		mock := &mockClient{existsResult: true}
 		withMockClient(t, mock)
 
-		exists, err := remoteFileExists(config, "/path/file.txt").getValue()
+		exists, err := remoteFileExists(config, "/path/file.txt")
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -150,7 +145,7 @@ func TestRemoteFileExists(t *testing.T) {
 		mock := &mockClient{existsResult: false}
 		withMockClient(t, mock)
 
-		exists, err := remoteFileExists(config, "/path/file.txt").getValue()
+		exists, err := remoteFileExists(config, "/path/file.txt")
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -164,13 +159,10 @@ func TestRemoteFileExists(t *testing.T) {
 		mock := &mockClient{connectErr: errors.New("connection failed")}
 		withMockClient(t, mock)
 
-		exists, err := remoteFileExists(config, "/path/file.txt").getValue()
+		_, err := remoteFileExists(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "connection failed") {
 			t.Errorf("expected connection error, got: %v", err)
-		}
-		if exists {
-			t.Error("expected exists = false on error")
 		}
 	})
 
@@ -178,13 +170,10 @@ func TestRemoteFileExists(t *testing.T) {
 		mock := &mockClient{existsErr: errors.New("stat failed")}
 		withMockClient(t, mock)
 
-		exists, err := remoteFileExists(config, "/path/file.txt").getValue()
+		_, err := remoteFileExists(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "stat failed") {
 			t.Errorf("expected stat error, got: %v", err)
-		}
-		if exists {
-			t.Error("expected exists = false on error")
 		}
 	})
 }
@@ -196,7 +185,7 @@ func TestDeleteRemoteFile(t *testing.T) {
 		mock := &mockClient{}
 		withMockClient(t, mock)
 
-		_, err := deleteRemoteFile(config, "/path/file.txt").getValue()
+		err := deleteRemoteFile(config, "/path/file.txt")
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -210,7 +199,7 @@ func TestDeleteRemoteFile(t *testing.T) {
 		mock := &mockClient{connectErr: errors.New("connection failed")}
 		withMockClient(t, mock)
 
-		_, err := deleteRemoteFile(config, "/path/file.txt").getValue()
+		err := deleteRemoteFile(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "connection failed") {
 			t.Errorf("expected connection error, got: %v", err)
@@ -221,7 +210,7 @@ func TestDeleteRemoteFile(t *testing.T) {
 		mock := &mockClient{deleteErr: errors.New("delete failed")}
 		withMockClient(t, mock)
 
-		_, err := deleteRemoteFile(config, "/path/file.txt").getValue()
+		err := deleteRemoteFile(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "delete failed") {
 			t.Errorf("expected delete error, got: %v", err)
@@ -237,7 +226,7 @@ func TestGetRemoteFileInfo(t *testing.T) {
 		mock := &mockClient{fileInfo: expected}
 		withMockClient(t, mock)
 
-		info, err := getRemoteFileInfo(config, "/path/file.txt").getValue()
+		info, err := getRemoteFileInfo(config, "/path/file.txt")
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -254,13 +243,10 @@ func TestGetRemoteFileInfo(t *testing.T) {
 		mock := &mockClient{connectErr: errors.New("connection failed")}
 		withMockClient(t, mock)
 
-		info, err := getRemoteFileInfo(config, "/path/file.txt").getValue()
+		_, err := getRemoteFileInfo(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "connection failed") {
 			t.Errorf("expected connection error, got: %v", err)
-		}
-		if info != nil {
-			t.Error("expected nil info on error")
 		}
 	})
 
@@ -268,13 +254,10 @@ func TestGetRemoteFileInfo(t *testing.T) {
 		mock := &mockClient{fileInfoErr: errors.New("not found")}
 		withMockClient(t, mock)
 
-		info, err := getRemoteFileInfo(config, "/path/file.txt").getValue()
+		_, err := getRemoteFileInfo(config, "/path/file.txt")
 
 		if err == nil || !strings.Contains(err.Error(), "not found") {
 			t.Errorf("expected not found error, got: %v", err)
-		}
-		if info != nil {
-			t.Error("expected nil info on error")
 		}
 	})
 }
@@ -286,7 +269,7 @@ func TestChmodRemoteFile(t *testing.T) {
 		mock := &mockClient{}
 		withMockClient(t, mock)
 
-		_, err := chmodRemoteFile(config, "/path/file.txt", 0600).getValue()
+		err := chmodRemoteFile(config, "/path/file.txt", 0600)
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -304,7 +287,7 @@ func TestChmodRemoteFile(t *testing.T) {
 
 	t.Run("client creation error", func(t *testing.T) {
 		withMockCreateClientFailure(t)
-		_, err := chmodRemoteFile(config, "/path/file.txt", 0600).getValue()
+		err := chmodRemoteFile(config, "/path/file.txt", 0600)
 		if err == nil || !strings.Contains(err.Error(), "create client failure") {
 			t.Errorf("expected client creation error, got: %v", err)
 		}
@@ -314,7 +297,7 @@ func TestChmodRemoteFile(t *testing.T) {
 		mock := &mockClient{connectErr: errors.New("connection failed")}
 		withMockClient(t, mock)
 
-		_, err := chmodRemoteFile(config, "/path/file.txt", 0600).getValue()
+		err := chmodRemoteFile(config, "/path/file.txt", 0600)
 
 		if err == nil || !strings.Contains(err.Error(), "connection failed") {
 			t.Errorf("expected connection error, got: %v", err)
@@ -325,7 +308,7 @@ func TestChmodRemoteFile(t *testing.T) {
 		mock := &mockClient{chmodErr: errors.New("chmod failed")}
 		withMockClient(t, mock)
 
-		_, err := chmodRemoteFile(config, "/path/file.txt", 0600).getValue()
+		err := chmodRemoteFile(config, "/path/file.txt", 0600)
 
 		if err == nil || !strings.Contains(err.Error(), "chmod failed") {
 			t.Errorf("expected chmod error, got: %v", err)
@@ -529,7 +512,7 @@ func TestAccProvider_InvalidKnownHostsPath(t *testing.T) {
 
 func checkRemoteFileDeleted(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		exists, err := remoteFileExists(config, remotePath).getValue()
+		exists, err := remoteFileExists(config, remotePath)
 		if err != nil {
 			return fmt.Errorf("error checking if remote file exists: %s", err)
 		}
@@ -542,7 +525,7 @@ func checkRemoteFileDeleted(config *scpProviderConfig, remotePath string) resour
 
 func checkRemoteFileContent(config *scpProviderConfig, remotePath, resourceName string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		content, err := readRemoteFile(config, remotePath).getValue()
+		content, err := readRemoteFile(config, remotePath)
 		if err != nil {
 			return fmt.Errorf("error reading remote file at path: %s, error: %s", remotePath, err)
 		}
@@ -562,7 +545,7 @@ func checkRemoteFileContent(config *scpProviderConfig, remotePath, resourceName 
 
 func checkRemoteFileExists(config *scpProviderConfig, remotePath string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		exists, err := remoteFileExists(config, remotePath).getValue()
+		exists, err := remoteFileExists(config, remotePath)
 		if err != nil {
 			return fmt.Errorf("error checking remote file: %s", err)
 		}
@@ -575,7 +558,7 @@ func checkRemoteFileExists(config *scpProviderConfig, remotePath string) resourc
 
 func checkRemoteFileHasPermissions(config *scpProviderConfig, remotePath string, expectedPerm os.FileMode) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		info, err := getRemoteFileInfo(config, remotePath).getValue()
+		info, err := getRemoteFileInfo(config, remotePath)
 		if err != nil {
 			return fmt.Errorf("error getting file info for %s: %s", remotePath, err)
 		}
@@ -594,7 +577,7 @@ func checkRemoteDirectoryHasPermissions(config *scpProviderConfig, remotePath st
 		// Get the directory path from the file path
 		dirPath := filepath.Dir(remotePath)
 
-		info, err := getRemoteFileInfo(config, dirPath).getValue()
+		info, err := getRemoteFileInfo(config, dirPath)
 		if err != nil {
 			return fmt.Errorf("error getting directory info for %s: %s", dirPath, err)
 		}
@@ -610,7 +593,7 @@ func checkRemoteDirectoryHasPermissions(config *scpProviderConfig, remotePath st
 
 func checkRemoteDirectoryExists(config *scpProviderConfig, dirPath string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		info, err := getRemoteFileInfo(config, dirPath).getValue()
+		info, err := getRemoteFileInfo(config, dirPath)
 		if err != nil {
 			return fmt.Errorf("directory %s does not exist: %s", dirPath, err)
 		}
@@ -621,17 +604,18 @@ func checkRemoteDirectoryExists(config *scpProviderConfig, dirPath string) resou
 	}
 }
 
-func createRemoteDirectory(config *scpProviderConfig, dirPath string, mode os.FileMode) Result[struct{}] {
+func createRemoteDirectory(config *scpProviderConfig, dirPath string, mode os.FileMode) error {
 	return writeRemoteFile(config, filepath.Join(dirPath, ".keep"), []byte{}, 0644, mode)
 }
 
 func checkMultipleDirectoriesHavePermissions(config *scpProviderConfig, dirs []string, expectedPerm os.FileMode) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		for _, dir := range dirs {
-			info, err := getRemoteFileInfo(config, dir).getValue()
+			info, err := getRemoteFileInfo(config, dir)
 			if err != nil {
 				return fmt.Errorf("error getting info for directory %s: %s", dir, err)
 			}
+
 			if !info.Mode.IsDir() {
 				return fmt.Errorf("path %s is not a directory", dir)
 			}
