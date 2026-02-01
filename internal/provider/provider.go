@@ -22,6 +22,8 @@ import (
 
 var (
 	_ provider.Provider = (*scpProvider)(nil)
+
+	newClientFunc = remote.NewClient
 )
 
 func New(version string) func() provider.Provider {
@@ -169,6 +171,28 @@ func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 	}
 }
 
+type Result[T any] interface {
+	getValue() (T, error)
+}
+
+type Error[T any] struct {
+	zero T
+	err  error
+}
+
+func (r *Error[T]) getValue() (T, error) {
+	return r.zero, r.err
+}
+
+type Value[T any] struct {
+	value T
+	err   error
+}
+
+func (r *Value[T]) getValue() (T, error) {
+	return r.value, r.err
+}
+
 type fileChecksums struct {
 	md5Hex       string
 	sha1Hex      string
@@ -195,7 +219,7 @@ func genFileChecksums(data []byte) fileChecksums {
 }
 
 func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
-	return remote.NewClient(&remote.Config{
+	return newClientFunc(&remote.Config{
 		Host:                     config.Host,
 		Port:                     config.Port,
 		User:                     config.User,
@@ -209,90 +233,86 @@ func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
 	})
 }
 
-func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) error {
+func withConnectedClient[T any](config *scpProviderConfig, fn func(remote.Client) Result[T]) Result[T] {
 	client, err := createRemoteClient(config)
 	if err != nil {
-		return err
+		return &Error[T]{err: err}
 	}
 	defer client.Close()
 
 	if err := client.Connect(); err != nil {
-		return err
+		return &Error[T]{err: err}
 	}
 
-	return client.WriteFile(remotePath, content, fileMode, dirMode)
+	return fn(client)
 }
 
-func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error) {
-	client, err := createRemoteClient(config)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		return nil, err
-	}
-
-	return client.ReadFile(remotePath)
+func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) Result[struct{}] {
+	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
+		err := c.WriteFile(remotePath, content, fileMode, dirMode)
+		if err != nil {
+			return &Error[struct{}]{err: err}
+		}
+		return &Value[struct{}]{}
+	})
+	return result
 }
 
-func remoteFileExists(config *scpProviderConfig, remotePath string) (bool, error) {
-	client, err := createRemoteClient(config)
-	if err != nil {
-		return false, err
-	}
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		return false, err
-	}
-
-	return client.FileExists(remotePath)
+func readRemoteFile(config *scpProviderConfig, remotePath string) Result[[]byte] {
+	result := withConnectedClient(config, func(c remote.Client) Result[[]byte] {
+		data, err := c.ReadFile(remotePath)
+		if err != nil {
+			return &Error[[]byte]{err: err}
+		}
+		return &Value[[]byte]{value: data}
+	})
+	return result
 }
 
-func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
-	client, err := createRemoteClient(config)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		return err
-	}
-
-	return client.DeleteFile(remotePath)
+func remoteFileExists(config *scpProviderConfig, remotePath string) Result[bool] {
+	result := withConnectedClient(config, func(c remote.Client) Result[bool] {
+		exists, err := c.FileExists(remotePath)
+		if err != nil {
+			return &Error[bool]{err: err}
+		}
+		return &Value[bool]{value: exists}
+	})
+	return result
 }
 
-func getRemoteFileInfo(config *scpProviderConfig, remotePath string) (*remote.FileInfo, error) {
-	client, err := createRemoteClient(config)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
+func getRemoteFileInfo(config *scpProviderConfig, remotePath string) Result[*remote.FileInfo] {
+	result := withConnectedClient(config, func(c remote.Client) Result[*remote.FileInfo] {
+		info, err := c.GetFileInfo(remotePath)
+		if err != nil {
+			return &Error[*remote.FileInfo]{err: err}
+		}
+		return &Value[*remote.FileInfo]{value: info}
+	})
+	return result
+}
 
-	if err := client.Connect(); err != nil {
-		return nil, err
-	}
-
-	return client.GetFileInfo(remotePath)
+func deleteRemoteFile(config *scpProviderConfig, remotePath string) Result[struct{}] {
+	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
+		err := c.DeleteFile(remotePath)
+		if err != nil {
+			return &Error[struct{}]{err: err}
+		}
+		return &Value[struct{}]{}
+	})
+	return result
 }
 
 // chmodRemoteFile changes the permissions of a remote file without modifying content.
 // Used in tests to simulate external permission modifications.
-func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileMode) error {
-	client, err := createRemoteClient(config)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if err := client.Connect(); err != nil {
-		return err
-	}
-
-	return client.Chmod(remotePath, mode)
+func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileMode) Result[struct{}] {
+	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
+		err := c.Chmod(remotePath, mode)
+		if err != nil {
+			return &Error[struct{}]{err: err}
+		}
+		return &Value[struct{}]{}
+	})
+	return result
 }
 
 func parseFilePermissions(permStr string) os.FileMode {

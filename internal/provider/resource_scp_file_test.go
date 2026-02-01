@@ -319,7 +319,7 @@ func TestSCPFile_DriftDetection(t *testing.T) {
 				Check: r.ComposeTestCheckFunc(
 					// Verify the remote file has been restored to original content
 					func(s *terraform.State) error {
-						content, err := readRemoteFile(config, remotePath)
+						content, err := readRemoteFile(config, remotePath).getValue()
 						if err != nil {
 							return fmt.Errorf("error reading remote file: %s", err)
 						}
@@ -373,7 +373,7 @@ func TestAccSCPFile_PermissionDriftDetection(t *testing.T) {
 					checkRemoteFileHasPermissions(config, remotePath, 0644),
 					// Verify content is still correct
 					func(s *terraform.State) error {
-						content, err := readRemoteFile(config, remotePath)
+						content, err := readRemoteFile(config, remotePath).getValue()
 						if err != nil {
 							return fmt.Errorf("error reading remote file: %s", err)
 						}

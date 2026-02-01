@@ -222,8 +222,13 @@ func (r *scpFileResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString())
+	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString()).getValue()
 	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"Read SCP File Error",
+			"An unexpected error occurred while reading the remote file\n\n"+
+				fmt.Sprintf("Original Error: %s", err)+
+				"\n\nDeleting resource from state.")
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -234,9 +239,13 @@ func (r *scpFileResource) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// Check if file permissions match
-	fileInfo, err := getRemoteFileInfo(r.config, state.Filename.ValueString())
+	fileInfo, err := getRemoteFileInfo(r.config, state.Filename.ValueString()).getValue()
 	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"Read SCP File Error",
+			"An unexpected error occurred while getting remote file info\n\n"+
+				fmt.Sprintf("Original Error: %s", err)+
+				"\n\nDeleting resource from state.")
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -244,7 +253,7 @@ func (r *scpFileResource) Read(ctx context.Context, req resource.ReadRequest, re
 	expectedPerm := parseFilePermissions(state.FilePermission.ValueString())
 	actualPerm := fileInfo.Mode & os.ModePerm
 	if actualPerm != expectedPerm {
-		// Permissions don't match - trigger recreation
+		// TODO: Show the difference in the plan output
 		resp.State.RemoveResource(ctx)
 		return
 	}

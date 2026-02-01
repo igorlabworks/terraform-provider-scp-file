@@ -252,7 +252,7 @@ func TestSCPSensitiveFile_DriftDetection(t *testing.T) {
 				Check: r.ComposeTestCheckFunc(
 					// Verify the remote file has been restored to original content
 					func(s *terraform.State) error {
-						content, err := readRemoteFile(config, remotePath)
+						content, err := readRemoteFile(config, remotePath).getValue()
 						if err != nil {
 							return fmt.Errorf("error reading remote file: %s", err)
 						}

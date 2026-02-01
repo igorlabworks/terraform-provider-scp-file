@@ -22,10 +22,16 @@ fmt:
   gofmt -s -w -e .
 
 test *args="./...":
-  go test -v -cover -timeout=120s -parallel=10 {{args}}
+  go test -v -coverprofile=coverage.out -timeout=120s -parallel=10 {{args}}
 
 test-acc-docker *args="./...":
-  TF_ACC=1 go test -count=1 -v -cover -timeout=10m {{args}}
+  TF_ACC=1 go test -count=1 -v -coverprofile=coverage.out -timeout=10m {{args}}
+
+coverage-html *args="./...":
+  go tool cover -html=coverage.out -o coverage.html
+
+coverage-lcov *args="./...":
+  gcov2lcov -in=coverage.out -out=coverage.lcov
 
 test-host-up:
   docker run --rm -d \

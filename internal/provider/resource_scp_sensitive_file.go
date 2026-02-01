@@ -224,7 +224,7 @@ func (r *scpSensitiveFileResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString())
+	outputContent, err := readRemoteFile(r.config, state.Filename.ValueString()).getValue()
 	if err != nil {
 		resp.State.RemoveResource(ctx)
 		return
@@ -237,7 +237,7 @@ func (r *scpSensitiveFileResource) Read(ctx context.Context, req resource.ReadRe
 	}
 
 	// Check if file permissions match
-	fileInfo, err := getRemoteFileInfo(r.config, state.Filename.ValueString())
+	fileInfo, err := getRemoteFileInfo(r.config, state.Filename.ValueString()).getValue()
 	if err != nil {
 		resp.State.RemoveResource(ctx)
 		return
