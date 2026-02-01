@@ -241,6 +241,10 @@ func (c *SFTPClient) DeleteFile(remotePath string) error {
 	return c.sftpClient.Remove(remotePath)
 }
 
+func (c *SFTPClient) Chmod(remotePath string, mode os.FileMode) error {
+	return c.sftpClient.Chmod(remotePath, mode)
+}
+
 func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {
 	var authMethods []ssh.AuthMethod
 

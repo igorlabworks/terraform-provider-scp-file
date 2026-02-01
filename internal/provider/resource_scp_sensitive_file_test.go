@@ -292,6 +292,48 @@ func TestSCPSensitiveFile_DriftDetection(t *testing.T) {
 	})
 }
 
+func TestAccSCPSensitiveFile_PermissionDriftDetection(t *testing.T) {
+	// Skip if not in acceptance test mode
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/test_sensitive_perm_drift.txt")
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				SkipFunc: skipIfWindows(),
+				// Step 1: Create sensitive file with specific permissions (0600)
+				Config: testAccSCPSensitiveFileWithPermissions(config, "Sensitive permission drift test", remotePath, "0600"),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					checkRemoteFileHasPermissions(config, remotePath, 0600),
+				),
+			},
+			{
+				SkipFunc: skipIfWindows(),
+				// Step 2: Externally modify permissions, then verify Terraform detects and restores
+				PreConfig: func() {
+					// Simulate external process changing permissions to 0777 (insecure)
+					err := chmodRemoteFile(config, remotePath, 0777)
+					if err != nil {
+						t.Fatalf("Failed to chmod remote file: %s", err)
+					}
+				},
+				Config: testAccSCPSensitiveFileWithPermissions(config, "Sensitive permission drift test", remotePath, "0600"),
+				Check: r.ComposeTestCheckFunc(
+					// Verify permissions were restored to secure 0600
+					checkRemoteFileHasPermissions(config, remotePath, 0600),
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
 func testAccSCPSensitiveFileConfig(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
@@ -322,6 +364,23 @@ func testAccSCPSensitiveFileConfigNoPermissions(config *scpProviderConfig, conte
 		  content  = %[5]q
 		  filename = %[6]q
 		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
+}
+
+func testAccSCPSensitiveFileWithPermissions(config *scpProviderConfig, content, filename, filePermission string) string {
+	return fmt.Sprintf(`
+		provider "scp" {
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
+		}
+
+		resource "scp_sensitive_file" "test" {
+		  content         = %[5]q
+		  filename        = %[6]q
+		  file_permission = %[8]q
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath, filePermission)
 }
 
 func testAccSCPSensitiveFileBase64ContentConfig(config *scpProviderConfig, content, filename string) string {

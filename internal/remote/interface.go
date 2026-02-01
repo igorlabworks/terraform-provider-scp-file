@@ -17,6 +17,7 @@ type Client interface {
 	FileExists(remotePath string) (bool, error)
 	DeleteFile(remotePath string) error
 	GetFileInfo(remotePath string) (*FileInfo, error)
+	Chmod(remotePath string, mode os.FileMode) error
 }
 
 type Config struct {

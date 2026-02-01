@@ -279,6 +279,22 @@ func getRemoteFileInfo(config *scpProviderConfig, remotePath string) (*remote.Fi
 	return client.GetFileInfo(remotePath)
 }
 
+// chmodRemoteFile changes the permissions of a remote file without modifying content.
+// Used in tests to simulate external permission modifications.
+func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileMode) error {
+	client, err := createRemoteClient(config)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if err := client.Connect(); err != nil {
+		return err
+	}
+
+	return client.Chmod(remotePath, mode)
+}
+
 func parseFilePermissions(permStr string) os.FileMode {
 	perm, _ := strconv.ParseInt(permStr, 8, 64)
 	return os.FileMode(perm)

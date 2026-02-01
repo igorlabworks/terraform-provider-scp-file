@@ -316,6 +316,60 @@ func TestSCPFile_DriftDetection(t *testing.T) {
 	})
 }
 
+func TestAccSCPFile_PermissionDriftDetection(t *testing.T) {
+	// Skip if not in acceptance test mode
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/test_file_perm_drift.txt")
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				SkipFunc: skipIfWindows(),
+				// Step 1: Create file with specific permissions (0644)
+				Config: testAccSCPFileWithPermissions(config, "Permission drift test content", remotePath, "0644"),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					checkRemoteFileHasPermissions(config, remotePath, 0644),
+				),
+			},
+			{
+				SkipFunc: skipIfWindows(),
+				// Step 2: Externally modify permissions, then verify Terraform detects and restores
+				PreConfig: func() {
+					// Simulate external process changing permissions to 0755
+					err := chmodRemoteFile(config, remotePath, 0755)
+					if err != nil {
+						t.Fatalf("Failed to chmod remote file: %s", err)
+					}
+				},
+				// Re-apply the same config - Terraform should detect drift and restore
+				Config: testAccSCPFileWithPermissions(config, "Permission drift test content", remotePath, "0644"),
+				Check: r.ComposeTestCheckFunc(
+					// Verify permissions were restored to 0644
+					checkRemoteFileHasPermissions(config, remotePath, 0644),
+					// Verify content is still correct
+					func(s *terraform.State) error {
+						content, err := readRemoteFile(config, remotePath)
+						if err != nil {
+							return fmt.Errorf("error reading remote file: %s", err)
+						}
+						if string(content) != "Permission drift test content" {
+							return fmt.Errorf("content mismatch: expected 'Permission drift test content', got '%s'", string(content))
+						}
+						return nil
+					},
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
 func TestAccSCPFile_SSHConfigHostAlias(t *testing.T) {
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
@@ -463,6 +517,23 @@ func testAccSCPFileConfigNoPermissions(config *scpProviderConfig, content, filen
 		  content  = %[5]q
 		  filename = %[6]q
 		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
+}
+
+func testAccSCPFileWithPermissions(config *scpProviderConfig, content, filename, filePermission string) string {
+	return fmt.Sprintf(`
+		provider "scp" {
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
+		}
+
+		resource "scp_file" "test" {
+		  content         = %[5]q
+		  filename        = %[6]q
+		  file_permission = %[8]q
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath, filePermission)
 }
 
 func testAccSCPFileSensitiveContentConfig(config *scpProviderConfig, content, filename string) string {
