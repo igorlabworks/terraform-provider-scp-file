@@ -66,23 +66,22 @@ func (r *scpFileResource) Schema(ctx context.Context, req resource.SchemaRequest
 			},
 			"content": schema.StringAttribute{
 				Description: "Content to store in the file, expected to be a UTF-8 encoded string.\n " +
-					"Conflicts with `sensitive_content`, `content_base64` and `source`.\n " +
-					"Exactly one of these four arguments must be specified.",
+					"Conflicts with `content_base64` and `source`.\n " +
+					"Exactly one of these three arguments must be specified.",
 				Optional: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
 					stringvalidator.ExactlyOneOf(
-						path.MatchRoot("sensitive_content"),
 						path.MatchRoot("content_base64"),
 						path.MatchRoot("source")),
 				},
 			},
 			"content_base64": schema.StringAttribute{
 				Description: "Content to store in the file, expected to be binary encoded as base64 string.\n " +
-					"Conflicts with `content`, `sensitive_content` and `source`.\n " +
-					"Exactly one of these four arguments must be specified.",
+					"Conflicts with `content` and `source`.\n " +
+					"Exactly one of these three arguments must be specified.",
 				Optional: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -90,14 +89,13 @@ func (r *scpFileResource) Schema(ctx context.Context, req resource.SchemaRequest
 				Validators: []validator.String{
 					stringvalidator.ExactlyOneOf(
 						path.MatchRoot("content"),
-						path.MatchRoot("sensitive_content"),
 						path.MatchRoot("source")),
 				},
 			},
 			"source": schema.StringAttribute{
 				Description: "Path to a local file to use as source for the remote file.\n " +
-					"Conflicts with `content`, `sensitive_content` and `content_base64`.\n " +
-					"Exactly one of these four arguments must be specified.",
+					"Conflicts with `content` and `content_base64`.\n " +
+					"Exactly one of these three arguments must be specified.",
 				Optional: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -105,7 +103,6 @@ func (r *scpFileResource) Schema(ctx context.Context, req resource.SchemaRequest
 				Validators: []validator.String{
 					stringvalidator.ExactlyOneOf(
 						path.MatchRoot("content"),
-						path.MatchRoot("sensitive_content"),
 						path.MatchRoot("content_base64")),
 				},
 			},
@@ -136,26 +133,6 @@ func (r *scpFileResource) Schema(ctx context.Context, req resource.SchemaRequest
 			"id": schema.StringAttribute{
 				Description: "The hexadecimal encoding of the SHA1 checksum of the file content.",
 				Computed:    true,
-			},
-			"sensitive_content": schema.StringAttribute{
-				DeprecationMessage: "Use the `scp_sensitive_file` resource instead",
-				Description: "Sensitive content to store in the file, expected to be an UTF-8 encoded string.\n " +
-					"Will not be displayed in diffs.\n " +
-					"Conflicts with `content`, `content_base64` and `source`.\n " +
-					"Exactly one of these four arguments must be specified.\n " +
-					"If in need to use _sensitive_ content, please use the [`scp_sensitive_file`](./sensitive_file.html)\n " +
-					"resource instead.",
-				Sensitive: true,
-				Optional:  true,
-				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
-				},
-				Validators: []validator.String{
-					stringvalidator.ExactlyOneOf(
-						path.MatchRoot("content"),
-						path.MatchRoot("content_base64"),
-						path.MatchRoot("source")),
-				},
 			},
 			"content_md5": schema.StringAttribute{
 				Description: "MD5 checksum of file content.",
@@ -303,9 +280,6 @@ func (r *scpFileResource) Delete(ctx context.Context, req resource.DeleteRequest
 }
 
 func resolveSCPFileContent(plan scpFileResourceModel) ([]byte, error) {
-	if !plan.SensitiveContent.IsNull() {
-		return []byte(plan.SensitiveContent.ValueString()), nil
-	}
 	if !plan.ContentBase64.IsNull() {
 		return base64.StdEncoding.DecodeString(plan.ContentBase64.ValueString())
 	}
@@ -323,7 +297,6 @@ type scpFileResourceModel struct {
 	FilePermission      localtypes.FilePermissionValue `tfsdk:"file_permission"`
 	DirectoryPermission localtypes.FilePermissionValue `tfsdk:"directory_permission"`
 	ID                  types.String                   `tfsdk:"id"`
-	SensitiveContent    types.String                   `tfsdk:"sensitive_content"`
 	ContentMd5          types.String                   `tfsdk:"content_md5"`
 	ContentSha1         types.String                   `tfsdk:"content_sha1"`
 	ContentSha256       types.String                   `tfsdk:"content_sha256"`

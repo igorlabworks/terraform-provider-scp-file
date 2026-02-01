@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -843,5 +844,215 @@ func TestHostKeyChangedError(t *testing.T) {
 	}
 	if !strings.Contains(errMsg, knownHostsPath) {
 		t.Errorf("Error message should contain known_hosts path, got: %s", errMsg)
+	}
+}
+
+// TestDefaultSSHTimeoutValue verifies the SSH timeout constant is set correctly.
+func TestDefaultSSHTimeoutValue(t *testing.T) {
+	// Verify the constant is set correctly
+	if defaultSSHTimeout != 30*time.Second {
+		t.Errorf("Expected defaultSSHTimeout to be 30s, got %v", defaultSSHTimeout)
+	}
+}
+
+// TestConnectionRetryCount verifies the correct number of connection attempts are made.
+func TestConnectionRetryCount(t *testing.T) {
+	tests := []struct {
+		retries         int
+		expectedInError string
+	}{
+		{1, "after 1 attempts"},
+		{2, "after 2 attempts"},
+		{3, "after 3 attempts"},
+		{5, "after 5 attempts"},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d_retries", tt.retries), func(t *testing.T) {
+			client := &SFTPClient{config: &Config{
+				Host:                     "localhost",
+				Port:                     1, // Closed port
+				User:                     "testuser",
+				Password:                 "testpass",
+				IgnoreHostKey:            true,
+				ConnectionRetries:        tt.retries,
+				ConnectionRetryBaseDelay: 1, // Minimal delay
+			}}
+
+			err := client.Connect()
+			if err == nil {
+				t.Fatal("Expected connection error")
+			}
+
+			if !strings.Contains(err.Error(), tt.expectedInError) {
+				t.Errorf("Expected error to contain %q, got: %v", tt.expectedInError, err)
+			}
+		})
+	}
+}
+
+// TestConnectionFailureErrorMessage verifies connection failure error messages are informative.
+func TestConnectionFailureErrorMessage(t *testing.T) {
+	tests := []struct {
+		name             string
+		host             string
+		port             int
+		expectedContains []string
+	}{
+		{
+			name: "connection_refused",
+			host: "localhost",
+			port: 1, // Closed port
+			expectedContains: []string{
+				"failed to connect to SSH server",
+				"localhost:1",
+				"after",
+				"attempts",
+			},
+		},
+		{
+			name: "invalid_host",
+			host: "this.host.does.not.exist.invalid",
+			port: 22,
+			expectedContains: []string{
+				"failed to connect to SSH server",
+				"this.host.does.not.exist.invalid:22",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &SFTPClient{config: &Config{
+				Host:                     tt.host,
+				Port:                     tt.port,
+				User:                     "testuser",
+				Password:                 "testpass",
+				IgnoreHostKey:            true,
+				ConnectionRetries:        1,
+				ConnectionRetryBaseDelay: 1,
+			}}
+
+			err := client.Connect()
+			if err == nil {
+				t.Fatal("Expected connection error")
+			}
+
+			errMsg := err.Error()
+			for _, expected := range tt.expectedContains {
+				if !strings.Contains(errMsg, expected) {
+					t.Errorf("Expected error to contain %q, got: %s", expected, errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestConnectionRetryWithBackoff verifies retry logic executes with exponential delays.
+func TestConnectionRetryWithBackoff(t *testing.T) {
+	tests := []struct {
+		name          string
+		retries       int
+		baseDelayMs   int
+		minExpectedMs int64 // Minimum time based on backoff formula
+		maxExpectedMs int64 // Maximum reasonable time
+	}{
+		{
+			name:          "single retry no delay",
+			retries:       1,
+			baseDelayMs:   100,
+			minExpectedMs: 0,   // No retries = no delay
+			maxExpectedMs: 500, // Just dial time
+		},
+		{
+			name:        "two retries",
+			retries:     2,
+			baseDelayMs: 100,
+			// First attempt fails, delay = 100ms * 2^0 = 100ms, second attempt fails
+			minExpectedMs: 80, // ~100ms with tolerance
+			maxExpectedMs: 500,
+		},
+		{
+			name:        "three retries",
+			retries:     3,
+			baseDelayMs: 50,
+			// delay1 = 50ms, delay2 = 100ms, total = 150ms
+			minExpectedMs: 120,
+			maxExpectedMs: 500,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &SFTPClient{config: &Config{
+				Host:                     "localhost",
+				Port:                     1, // Invalid/closed port
+				User:                     "testuser",
+				Password:                 "testpass",
+				IgnoreHostKey:            true,
+				ConnectionRetries:        tt.retries,
+				ConnectionRetryBaseDelay: tt.baseDelayMs,
+			}}
+
+			start := time.Now()
+			err := client.Connect()
+			elapsed := time.Since(start)
+
+			if err == nil {
+				t.Fatal("Expected connection error")
+			}
+
+			elapsedMs := elapsed.Milliseconds()
+			if elapsedMs < tt.minExpectedMs {
+				t.Errorf("Connection failed too fast (%dms), expected >= %dms; backoff may not be working",
+					elapsedMs, tt.minExpectedMs)
+			}
+			if elapsedMs > tt.maxExpectedMs {
+				t.Errorf("Connection took too long (%dms), expected <= %dms",
+					elapsedMs, tt.maxExpectedMs)
+			}
+		})
+	}
+}
+
+// TestDefaultRetryValues verifies default values are applied when config values are 0.
+func TestDefaultRetryValues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping default retry test in short mode")
+	}
+
+	// With defaults: 3 retries, 500ms base delay
+	// Delays: 500ms, 1000ms = 1500ms total
+	client := &SFTPClient{config: &Config{
+		Host:          "localhost",
+		Port:          1,
+		User:          "testuser",
+		Password:      "testpass",
+		IgnoreHostKey: true,
+		// ConnectionRetries: 0,        // Use default (3)
+		// ConnectionRetryBaseDelay: 0, // Use default (500ms)
+	}}
+
+	start := time.Now()
+	err := client.Connect()
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("Expected connection error")
+	}
+
+	// With 3 retries and 500ms base:
+	// attempt 0 fails, sleep 500ms
+	// attempt 1 fails, sleep 1000ms
+	// attempt 2 fails, done
+	// Total delay: ~1500ms
+
+	if elapsed < 1400*time.Millisecond {
+		t.Errorf("Default retry backoff seems too fast (%v); expected ~1500ms+", elapsed)
+	}
+
+	// Verify error message says 3 attempts
+	if !strings.Contains(err.Error(), "after 3 attempts") {
+		t.Errorf("Expected default of 3 attempts, error: %v", err)
 	}
 }

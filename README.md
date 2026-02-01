@@ -166,10 +166,9 @@ Both `scp_file` and `scp_sensitive_file` resources support the following:
 #### Arguments
 
 - `filename` - (Required) The path to the file on the remote host. Missing parent directories will be created.
-- `content` - (Optional) Content to store in the file, expected to be a UTF-8 encoded string. Conflicts with `content_base64`, `sensitive_content`, and `source`.
-- `content_base64` - (Optional) Content to store in the file, expected to be binary encoded as base64 string. Conflicts with `content`, `sensitive_content`, and `source`.
-- `source` - (Optional) Path to a local file to use as source. Conflicts with `content`, `content_base64`, and `sensitive_content`.
-- `sensitive_content` - (Optional, `scp_file` only, deprecated) Use `scp_sensitive_file` instead.
+- `content` - (Optional) Content to store in the file, expected to be a UTF-8 encoded string. Conflicts with `content_base64` and `source`.
+- `content_base64` - (Optional) Content to store in the file, expected to be binary encoded as base64 string. Conflicts with `content` and `source`.
+- `source` - (Optional) Path to a local file to use as source. Conflicts with `content` and `content_base64`.
 - `file_permission` - (Optional) Permissions for the file in octal notation. Default is `"0777"` for `scp_file` and `"0700"` for `scp_sensitive_file`.
 - `directory_permission` - (Optional) Permissions for created directories in octal notation. Default is `"0777"` for `scp_file` and `"0700"` for `scp_sensitive_file`.
 

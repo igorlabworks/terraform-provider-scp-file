@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -294,4 +295,119 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 		ConnectionRetryBaseDelay: 2000, // 2s base delay for tests (default is 500ms)
 		// This creates exponential backoff: 2s, 4s, 8s, 16s, 32s (max 62s total).
 	}
+}
+
+func TestAccProvider_MissingHost(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/test_missing_host.txt")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+						user             = %[1]q
+						password         = %[2]q
+						known_hosts_path = %[3]q
+					}
+
+					resource "scp_file" "test" {
+						content  = "test"
+						filename = %[4]q
+					}
+				`, config.User, config.Password, config.KnownHostsPath, remotePath),
+				ExpectError: regexp.MustCompile(`(?i)host.*required|required.*host|Missing required argument`),
+			},
+		},
+	})
+}
+
+func TestAccProvider_InvalidPort(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/test_invalid_port.txt")
+
+	testCases := []struct {
+		name        string
+		port        string
+		expectError *regexp.Regexp
+	}{
+		{
+			name:        "negative_port",
+			port:        "-1",
+			expectError: regexp.MustCompile(`(?i)invalid|port|connection|failed|error`),
+		},
+		{
+			name:        "port_out_of_range",
+			port:        "99999",
+			expectError: regexp.MustCompile(`(?i)invalid|port|range|connection|failed|error`),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				ProtoV5ProviderFactories: protoV5ProviderFactories(),
+				Steps: []resource.TestStep{
+					{
+						Config: fmt.Sprintf(`
+							provider "scp" {
+								host             = %[1]q
+								port             = %[2]s
+								user             = %[3]q
+								password         = %[4]q
+								known_hosts_path = %[5]q
+							}
+
+							resource "scp_file" "test" {
+								content  = "test"
+								filename = %[6]q
+							}
+						`, config.Host, tc.port, config.User, config.Password, config.KnownHostsPath, remotePath),
+						ExpectError: tc.expectError,
+					},
+				},
+			})
+		})
+	}
+}
+
+func TestAccProvider_InvalidKnownHostsPath(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/test_invalid_known_hosts.txt")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+						host             = %[1]q
+						port             = %[2]d
+						user             = %[3]q
+						password         = %[4]q
+						known_hosts_path = "/nonexistent/path/known_hosts"
+					}
+
+					resource "scp_file" "test" {
+						content  = "test"
+						filename = %[5]q
+					}
+				`, config.Host, config.Port, config.User, config.Password, remotePath),
+				ExpectError: regexp.MustCompile(`(?i)known.?hosts|no such file|does not exist|unable to read|failed to create|read-only file system`),
+			},
+		},
+	})
 }
