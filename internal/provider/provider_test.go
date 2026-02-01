@@ -411,3 +411,82 @@ func TestAccProvider_InvalidKnownHostsPath(t *testing.T) {
 		},
 	})
 }
+
+func TestGenFileChecksums(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      []byte
+		wantMD5    string
+		wantSHA1   string
+		wantSHA256 string
+		wantSHA512 string
+	}{
+		{
+			name:       "empty input",
+			input:      []byte{},
+			wantMD5:    "d41d8cd98f00b204e9800998ecf8427e",
+			wantSHA1:   "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+			wantSHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			wantSHA512: "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
+		},
+		{
+			name:       "simple string",
+			input:      []byte("hello"),
+			wantMD5:    "5d41402abc4b2a76b9719d911017c592",
+			wantSHA1:   "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d",
+			wantSHA256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			wantSHA512: "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043",
+		},
+		{
+			name:       "binary content",
+			input:      []byte{0x00, 0xFF, 0x7F},
+			wantMD5:    "ff4068e5fb45f28e025e7c1004b3e65a",
+			wantSHA1:   "6157fd21706ec7ac8b87cc54caaf4936ad41cce7",
+			wantSHA256: "cb6dc5bd1968e27d552fd0332443db15e05fe7517cb9db8b446a60a747d03818",
+			wantSHA512: "1c9a5b521504f29cbc73f01f90d3fd3ddef42ba3e3a7f3229646d3a2f8f690176905dbde90a7f84a31ef2907f140fb5f79f5c3c061e4633ea92c02f4c71f5a7a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := genFileChecksums(tt.input)
+			if got.md5Hex != tt.wantMD5 {
+				t.Errorf("md5Hex = %q, want %q", got.md5Hex, tt.wantMD5)
+			}
+			if got.sha1Hex != tt.wantSHA1 {
+				t.Errorf("sha1Hex = %q, want %q", got.sha1Hex, tt.wantSHA1)
+			}
+			if got.sha256Hex != tt.wantSHA256 {
+				t.Errorf("sha256Hex = %q, want %q", got.sha256Hex, tt.wantSHA256)
+			}
+			if got.sha512Hex != tt.wantSHA512 {
+				t.Errorf("sha512Hex = %q, want %q", got.sha512Hex, tt.wantSHA512)
+			}
+		})
+	}
+}
+
+func TestParseFilePermissions(t *testing.T) {
+	tests := []struct {
+		input string
+		want  os.FileMode
+	}{
+		{"755", 0755},
+		{"0755", 0755},
+		{"644", 0644},
+		{"0777", 0777},
+		{"600", 0600},
+		{"0700", 0700},
+		{"", 0},
+		{"invalid", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseFilePermissions(tt.input)
+			if got != tt.want {
+				t.Errorf("parseFilePermissions(%q) = %04o, want %04o", tt.input, got, tt.want)
+			}
+		})
+	}
+}

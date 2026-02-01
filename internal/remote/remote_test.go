@@ -847,6 +847,34 @@ func TestHostKeyChangedError(t *testing.T) {
 	}
 }
 
+func TestPasswordAuthentication(t *testing.T) {
+	tmpHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpHome, ".ssh"), 0700); err != nil {
+		t.Fatalf("Failed to create .ssh dir: %v", err)
+	}
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	client := &SFTPClient{config: &Config{
+		Host:          "127.0.0.1",
+		Port:          1, // Closed port — will fail at dial, not at auth assembly
+		User:          "testuser",
+		Password:      "testpass",
+		IgnoreHostKey: true,
+
+		ConnectionRetries:        1,
+		ConnectionRetryBaseDelay: 1,
+	}}
+
+	err := client.Connect()
+	if err == nil {
+		t.Fatal("Expected connection error on closed port")
+	}
+	if strings.Contains(err.Error(), "no SSH authentication methods") {
+		t.Error("password authentication should have been configured")
+	}
+}
+
 // TestDefaultSSHTimeoutValue verifies the SSH timeout constant is set correctly.
 func TestDefaultSSHTimeoutValue(t *testing.T) {
 	// Verify the constant is set correctly

@@ -12,34 +12,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
-func TestSCPFile_Basic(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
-
-	config := getTestSSHConfig(t)
-	remotePath := getTestRemotePath("test_upload/test_file_basic.txt")
-
-	r.Test(t, r.TestCase{
-		ProtoV5ProviderFactories: protoV5ProviderFactories(),
-		Steps: []r.TestStep{
-			{
-				Config: testAccSCPFileConfig(config, "This is some content", remotePath),
-				Check:  checkRemoteFileContent(config, remotePath, "scp_file.test"),
-			},
-			{
-				Config: testAccSCPFileBase64ContentConfig(config, "VGhpcyBpcyBzb21lIGJhc2U2NCBjb250ZW50", remotePath),
-				Check:  checkRemoteFileContent(config, remotePath, "scp_file.test"),
-			},
-			{
-				Config: testAccSCPFileDecodedBase64ContentConfig(config, "This is some base64 content", remotePath),
-				Check:  checkRemoteFileContent(config, remotePath, "scp_file.test"),
-			},
-		},
-		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
-	})
-}
-
 func TestSCPFile_Content(t *testing.T) {
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
@@ -73,6 +45,10 @@ func TestSCPFile_Base64Content(t *testing.T) {
 		Steps: []r.TestStep{
 			{
 				Config: testAccSCPFileBase64ContentConfig(config, "VGhpcyBpcyBzb21lIGJhc2U2NCBjb250ZW50", remotePath),
+				Check:  checkRemoteFileContent(config, remotePath, "scp_file.test"),
+			},
+			{
+				Config: testAccSCPFileDecodedBase64ContentConfig(config, "This is some base64 content", remotePath),
 				Check:  checkRemoteFileContent(config, remotePath, "scp_file.test"),
 			},
 		},
@@ -109,7 +85,7 @@ func TestSCPFile_Source(t *testing.T) {
 	})
 }
 
-func TestSCPFile_Validators(t *testing.T) {
+func TestSCPFile_Validator_NoContentSource(t *testing.T) {
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
 	}
@@ -133,6 +109,39 @@ func TestSCPFile_Validators(t *testing.T) {
 
 				resource "scp_file" "file" {
 				  filename = %[5]q
+				}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
+				ExpectError: regexp.MustCompile(`.*Error: Invalid Attribute Combination`),
+			},
+		},
+	})
+}
+
+func TestSCPFile_Validator_ConflictingContentSources(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/test_file_conflicting_sources.txt")
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		CheckDestroy:             nil,
+		Steps: []r.TestStep{
+			{
+				Config: fmt.Sprintf(`
+				provider "scp" {
+				  host             = %[1]q
+				  port             = %[2]d
+				  user             = %[3]q
+				  password         = %[4]q
+				  known_hosts_path = %[6]q
+				}
+
+				resource "scp_file" "file" {
+				  content        = "content"
+				  content_base64 = "Y29udGVudA=="
+				  filename       = %[5]q
 				}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
 				ExpectError: regexp.MustCompile(`.*Error: Invalid Attribute Combination`),
 			},
@@ -168,6 +177,57 @@ func TestSCPFile_Permissions(t *testing.T) {
 						file_permission      = "9999"
 					}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
 				ExpectError: regexp.MustCompile(`bad mode permission`),
+			},
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+					  host             = %[1]q
+					  port             = %[2]d
+					  user             = %[3]q
+					  password         = %[4]q
+					  known_hosts_path = %[6]q
+					}
+
+					resource "scp_file" "file" {
+						content         = "This is some content"
+						filename        = %[5]q
+						file_permission = "77"
+					}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
+				ExpectError: regexp.MustCompile(`string length should be 3 or 4`),
+			},
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+					  host             = %[1]q
+					  port             = %[2]d
+					  user             = %[3]q
+					  password         = %[4]q
+					  known_hosts_path = %[6]q
+					}
+
+					resource "scp_file" "file" {
+						content         = "This is some content"
+						filename        = %[5]q
+						file_permission = "07777"
+					}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
+				ExpectError: regexp.MustCompile(`string length should be 3 or 4`),
+			},
+			{
+				Config: fmt.Sprintf(`
+					provider "scp" {
+					  host             = %[1]q
+					  port             = %[2]d
+					  user             = %[3]q
+					  password         = %[4]q
+					  known_hosts_path = %[6]q
+					}
+
+					resource "scp_file" "file" {
+						content         = "This is some content"
+						filename        = %[5]q
+						file_permission = "abc"
+					}`, config.Host, config.Port, config.User, config.Password, remotePath, config.KnownHostsPath),
+				ExpectError: regexp.MustCompile(`must be expressed in octal`),
 			},
 			{
 				SkipFunc: skipIfWindows(),
@@ -211,7 +271,7 @@ func TestAccSCPFile_DefaultPermissions(t *testing.T) {
 		Steps: []r.TestStep{
 			{
 				SkipFunc: skipIfWindows(),
-				Config:   testAccSCPFileConfigNoPermissions(config, "test content for defaults", remotePath),
+				Config:   testAccSCPFileConfig(config, "test content for defaults", remotePath),
 				Check: r.ComposeTestCheckFunc(
 					checkRemoteFileExists(config, remotePath),
 					// Verify file has default 0777 permissions
@@ -492,22 +552,6 @@ func testAccSCPFileConfig(config *scpProviderConfig, content, filename string) s
 		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
 }
 
-func testAccSCPFileConfigNoPermissions(config *scpProviderConfig, content, filename string) string {
-	return fmt.Sprintf(`
-		provider "scp" {
-		  host             = %[1]q
-		  port             = %[2]d
-		  user             = %[3]q
-		  password         = %[4]q
-		  known_hosts_path = %[7]q
-		}
-
-		resource "scp_file" "test" {
-		  content  = %[5]q
-		  filename = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
-}
-
 func testAccSCPFileWithPermissions(config *scpProviderConfig, content, filename, filePermission string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
@@ -758,7 +802,7 @@ func TestAccSCPFile_DirectoryCreationWithDefaults(t *testing.T) {
 		ProtoV5ProviderFactories: protoV5ProviderFactories(),
 		Steps: []r.TestStep{
 			{
-				Config: testAccSCPFileConfigNoPermissions(config, "test content", remotePath),
+				Config: testAccSCPFileConfig(config, "test content", remotePath),
 				Check: r.ComposeTestCheckFunc(
 					checkRemoteFileExists(config, remotePath),
 					checkMultipleDirectoriesHavePermissions(config, dirs, 0777),

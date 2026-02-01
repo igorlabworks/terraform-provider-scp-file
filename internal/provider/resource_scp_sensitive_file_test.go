@@ -12,34 +12,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
-func TestSCPSensitiveFile_Basic(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
-
-	config := getTestSSHConfig(t)
-	remotePath := getTestRemotePath("test_upload/test_sensitive_file_basic.txt")
-
-	r.Test(t, r.TestCase{
-		ProtoV5ProviderFactories: protoV5ProviderFactories(),
-		Steps: []r.TestStep{
-			{
-				Config: testAccSCPSensitiveFileConfig(config, "This is some sensitive content", remotePath),
-				Check:  checkRemoteFileContent(config, remotePath, "scp_sensitive_file.test"),
-			},
-			{
-				Config: testAccSCPSensitiveFileBase64ContentConfig(config, "VGhpcyBpcyBzb21lIGJhc2U2NCBjb250ZW50", remotePath),
-				Check:  checkRemoteFileContent(config, remotePath, "scp_sensitive_file.test"),
-			},
-			{
-				Config: testAccSCPSensitiveFileDecodedBase64ContentConfig(config, "This is some base64 content", remotePath),
-				Check:  checkRemoteFileContent(config, remotePath, "scp_sensitive_file.test"),
-			},
-		},
-		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
-	})
-}
-
 func TestSCPSensitiveFile_Content(t *testing.T) {
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
@@ -73,6 +45,10 @@ func TestSCPSensitiveFile_Base64Content(t *testing.T) {
 		Steps: []r.TestStep{
 			{
 				Config: testAccSCPSensitiveFileBase64ContentConfig(config, "VGhpcyBpcyBzb21lIGJhc2U2NCBjb250ZW50", remotePath),
+				Check:  checkRemoteFileContent(config, remotePath, "scp_sensitive_file.test"),
+			},
+			{
+				Config: testAccSCPSensitiveFileDecodedBase64ContentConfig(config, "This is some base64 content", remotePath),
 				Check:  checkRemoteFileContent(config, remotePath, "scp_sensitive_file.test"),
 			},
 		},
@@ -228,7 +204,7 @@ func TestAccSCPSensitiveFile_DefaultPermissions(t *testing.T) {
 		Steps: []r.TestStep{
 			{
 				SkipFunc: skipIfWindows(),
-				Config:   testAccSCPSensitiveFileConfigNoPermissions(config, "sensitive content for defaults", remotePath),
+				Config:   testAccSCPSensitiveFileConfig(config, "sensitive content for defaults", remotePath),
 				Check: r.ComposeTestCheckFunc(
 					checkRemoteFileExists(config, remotePath),
 					// Verify file has default 0700 permissions (restrictive)
@@ -335,22 +311,6 @@ func TestAccSCPSensitiveFile_PermissionDriftDetection(t *testing.T) {
 }
 
 func testAccSCPSensitiveFileConfig(config *scpProviderConfig, content, filename string) string {
-	return fmt.Sprintf(`
-		provider "scp" {
-		  host             = %[1]q
-		  port             = %[2]d
-		  user             = %[3]q
-		  password         = %[4]q
-		  known_hosts_path = %[7]q
-		}
-
-		resource "scp_sensitive_file" "test" {
-		  content  = %[5]q
-		  filename = %[6]q
-		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
-}
-
-func testAccSCPSensitiveFileConfigNoPermissions(config *scpProviderConfig, content, filename string) string {
 	return fmt.Sprintf(`
 		provider "scp" {
 		  host             = %[1]q
