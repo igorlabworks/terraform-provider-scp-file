@@ -1,93 +1,321 @@
-// Copyright (c) HashiCorp, Inc.
-// SPDX-License-Identifier: MPL-2.0
-
 package provider
 
 import (
 	"context"
-	"net/http"
+	"crypto/md5"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/base64"
+	"encoding/hex"
+	"os"
+	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
-	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
 )
 
-// Ensure ScaffoldingProvider satisfies various provider interfaces.
-var _ provider.Provider = &ScaffoldingProvider{}
-var _ provider.ProviderWithFunctions = &ScaffoldingProvider{}
-var _ provider.ProviderWithEphemeralResources = &ScaffoldingProvider{}
+var (
+	_ provider.Provider = (*scpProvider)(nil)
 
-// ScaffoldingProvider defines the provider implementation.
-type ScaffoldingProvider struct {
-	// version is set to the provider version on release, "dev" when the
-	// provider is built and ran locally, and "test" when running acceptance
-	// testing.
+	newClientFunc = remote.NewClient
+)
+
+func New(version string) func() provider.Provider {
+	return func() provider.Provider {
+		return &scpProvider{
+			version: version,
+		}
+	}
+}
+
+type scpProvider struct {
 	version string
+	config  *scpProviderConfig
 }
 
-// ScaffoldingProviderModel describes the provider data model.
-type ScaffoldingProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
+type scpProviderConfig struct {
+	Host           string
+	Port           int
+	User           string
+	Password       string
+	KeyPath        string
+	KnownHostsPath string
+	IgnoreHostKey  bool
+	SSHConfigPath  string
+
+	// Test-only fields for connection retry behavior
+	ConnectionRetries        int // 0 uses default (3)
+	ConnectionRetryBaseDelay int // milliseconds, 0 uses default (500ms)
 }
 
-func (p *ScaffoldingProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
-	resp.TypeName = "scaffolding"
+type scpProviderModel struct {
+	Host           types.String `tfsdk:"host"`
+	Port           types.Int64  `tfsdk:"port"`
+	User           types.String `tfsdk:"user"`
+	Password       types.String `tfsdk:"password"`
+	KeyPath        types.String `tfsdk:"key_path"`
+	KnownHostsPath types.String `tfsdk:"known_hosts_path"`
+	IgnoreHostKey  types.Bool   `tfsdk:"ignore_host_key"`
+	SSHConfigPath  types.String `tfsdk:"ssh_config_path"`
+}
+
+func (p *scpProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
+	resp.TypeName = "scp"
 	resp.Version = p.version
 }
 
-func (p *ScaffoldingProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
+func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	var config scpProviderModel
+
+	diags := req.Config.Get(ctx, &config)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var port int
+	if !config.Port.IsNull() && !config.Port.IsUnknown() {
+		port = int(config.Port.ValueInt64())
+	}
+
+	// For acceptance tests, allow configuring retry behavior via environment variables
+	connectionRetries := 0        // 0 means use default (3)
+	connectionRetryBaseDelay := 0 // 0 means use default (500ms)
+	if os.Getenv("TF_ACC") != "" {
+		// In acceptance test mode, use more aggressive retry settings
+		connectionRetries = 6
+		connectionRetryBaseDelay = 2000 // 2s base delay
+	}
+
+	p.config = &scpProviderConfig{
+		Host:                     config.Host.ValueString(),
+		Port:                     port,
+		User:                     config.User.ValueString(),
+		Password:                 config.Password.ValueString(),
+		KeyPath:                  config.KeyPath.ValueString(),
+		KnownHostsPath:           config.KnownHostsPath.ValueString(),
+		IgnoreHostKey:            config.IgnoreHostKey.ValueBool(),
+		SSHConfigPath:            config.SSHConfigPath.ValueString(),
+		ConnectionRetries:        connectionRetries,
+		ConnectionRetryBaseDelay: connectionRetryBaseDelay,
+	}
+
+	resp.ResourceData = p.config
+}
+
+func (p *scpProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
+	return []func() datasource.DataSource{}
+}
+
+func (p *scpProvider) Resources(ctx context.Context) []func() resource.Resource {
+	return []func() resource.Resource{
+		NewSCPFileResource,
+		NewSCPSensitiveFileResource,
+	}
+}
+
+func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		Description: "Provider for managing files on remote hosts via SCP/SFTP.",
 		Attributes: map[string]schema.Attribute{
-			"endpoint": schema.StringAttribute{
-				MarkdownDescription: "Example provider attribute",
-				Optional:            true,
+			"host": schema.StringAttribute{
+				Description: "The hostname or IP address of the remote SSH server. " +
+					"Can also be a host alias defined in `~/.ssh/config`.",
+				Required: true,
+			},
+			"port": schema.Int64Attribute{
+				Description: "The port of the remote SSH server. Defaults to 22. " +
+					"Can be overridden by `~/.ssh/config` settings.",
+				Optional: true,
+			},
+			"user": schema.StringAttribute{
+				Description: "The username for SSH authentication. " +
+					"Can be overridden by `~/.ssh/config` settings.",
+				Optional: true,
+			},
+			"password": schema.StringAttribute{
+				Description: "The password for SSH authentication. Conflicts with `key_path`.",
+				Optional:    true,
+				Sensitive:   true,
+			},
+			"key_path": schema.StringAttribute{
+				Description: "The path to the SSH private key for authentication. " +
+					"Supports ~ expansion. Can be overridden by `~/.ssh/config` IdentityFile directive. " +
+					"If not specified, default keys from `~/.ssh/` will be tried.",
+				Optional: true,
+			},
+			"known_hosts_path": schema.StringAttribute{
+				Description: "The path to the known_hosts file for host key verification. " +
+					"Defaults to `~/.ssh/known_hosts`. Supports `~` expansion.",
+				Optional: true,
+			},
+			"ignore_host_key": schema.BoolAttribute{
+				Description: "If true, skip host key verification. " +
+					"WARNING: This is insecure and should only be used for testing. " +
+					"Defaults to false.",
+				Optional: true,
+			},
+			"ssh_config_path": schema.StringAttribute{
+				Description: "The path to the SSH config file. " +
+					"Defaults to `~/.ssh/config`. Supports `~` expansion. " +
+					"The provider will read User, Hostname, Port, and IdentityFile directives.",
+				Optional: true,
 			},
 		},
 	}
 }
 
-func (p *ScaffoldingProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-	var data ScaffoldingProviderModel
+type Result[T any] interface {
+	getValue() (T, error)
+}
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+type Error[T any] struct {
+	zero T
+	err  error
+}
 
-	if resp.Diagnostics.HasError() {
-		return
+func (r *Error[T]) getValue() (T, error) {
+	return r.zero, r.err
+}
+
+type Value[T any] struct {
+	value T
+	err   error
+}
+
+func (r *Value[T]) getValue() (T, error) {
+	return r.value, r.err
+}
+
+type fileChecksums struct {
+	md5Hex       string
+	sha1Hex      string
+	sha256Hex    string
+	sha256Base64 string
+	sha512Hex    string
+	sha512Base64 string
+}
+
+func genFileChecksums(data []byte) fileChecksums {
+	md5Sum := md5.Sum(data)
+	sha1Sum := sha1.Sum(data)
+	sha256Sum := sha256.Sum256(data)
+	sha512Sum := sha512.Sum512(data)
+
+	return fileChecksums{
+		md5Hex:       hex.EncodeToString(md5Sum[:]),
+		sha1Hex:      hex.EncodeToString(sha1Sum[:]),
+		sha256Hex:    hex.EncodeToString(sha256Sum[:]),
+		sha256Base64: base64.StdEncoding.EncodeToString(sha256Sum[:]),
+		sha512Hex:    hex.EncodeToString(sha512Sum[:]),
+		sha512Base64: base64.StdEncoding.EncodeToString(sha512Sum[:]),
+	}
+}
+
+func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
+	return newClientFunc(&remote.Config{
+		Host:                     config.Host,
+		Port:                     config.Port,
+		User:                     config.User,
+		Password:                 config.Password,
+		KeyPath:                  config.KeyPath,
+		KnownHostsPath:           config.KnownHostsPath,
+		IgnoreHostKey:            config.IgnoreHostKey,
+		SSHConfigPath:            config.SSHConfigPath,
+		ConnectionRetries:        config.ConnectionRetries,
+		ConnectionRetryBaseDelay: config.ConnectionRetryBaseDelay,
+	})
+}
+
+func withConnectedClient[T any](config *scpProviderConfig, fn func(remote.Client) Result[T]) Result[T] {
+	client, err := createRemoteClient(config)
+	if err != nil {
+		return &Error[T]{err: err}
+	}
+	defer client.Close()
+
+	if err := client.Connect(); err != nil {
+		return &Error[T]{err: err}
 	}
 
-	// Configuration values are now available.
-	// if data.Endpoint.IsNull() { /* ... */ }
-
-	// Example client configuration for data sources and resources
-	client := http.DefaultClient
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	return fn(client)
 }
 
-func (p *ScaffoldingProvider) Resources(ctx context.Context) []func() resource.Resource {
-	return []func() resource.Resource{}
-}
-
-func (p *ScaffoldingProvider) EphemeralResources(ctx context.Context) []func() ephemeral.EphemeralResource {
-	return []func() ephemeral.EphemeralResource{}
-}
-
-func (p *ScaffoldingProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{}
-}
-
-func (p *ScaffoldingProvider) Functions(ctx context.Context) []func() function.Function {
-	return []func() function.Function{}
-}
-
-func New(version string) func() provider.Provider {
-	return func() provider.Provider {
-		return &ScaffoldingProvider{
-			version: version,
+func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) Result[struct{}] {
+	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
+		err := c.WriteFile(remotePath, content, fileMode, dirMode)
+		if err != nil {
+			return &Error[struct{}]{err: err}
 		}
-	}
+		return &Value[struct{}]{}
+	})
+	return result
+}
+
+func readRemoteFile(config *scpProviderConfig, remotePath string) Result[[]byte] {
+	result := withConnectedClient(config, func(c remote.Client) Result[[]byte] {
+		data, err := c.ReadFile(remotePath)
+		if err != nil {
+			return &Error[[]byte]{err: err}
+		}
+		return &Value[[]byte]{value: data}
+	})
+	return result
+}
+
+func remoteFileExists(config *scpProviderConfig, remotePath string) Result[bool] {
+	result := withConnectedClient(config, func(c remote.Client) Result[bool] {
+		exists, err := c.FileExists(remotePath)
+		if err != nil {
+			return &Error[bool]{err: err}
+		}
+		return &Value[bool]{value: exists}
+	})
+	return result
+}
+
+func getRemoteFileInfo(config *scpProviderConfig, remotePath string) Result[*remote.FileInfo] {
+	result := withConnectedClient(config, func(c remote.Client) Result[*remote.FileInfo] {
+		info, err := c.GetFileInfo(remotePath)
+		if err != nil {
+			return &Error[*remote.FileInfo]{err: err}
+		}
+		return &Value[*remote.FileInfo]{value: info}
+	})
+	return result
+}
+
+func deleteRemoteFile(config *scpProviderConfig, remotePath string) Result[struct{}] {
+	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
+		err := c.DeleteFile(remotePath)
+		if err != nil {
+			return &Error[struct{}]{err: err}
+		}
+		return &Value[struct{}]{}
+	})
+	return result
+}
+
+// chmodRemoteFile changes the permissions of a remote file without modifying content.
+// Used in tests to simulate external permission modifications.
+func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileMode) Result[struct{}] {
+	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
+		err := c.Chmod(remotePath, mode)
+		if err != nil {
+			return &Error[struct{}]{err: err}
+		}
+		return &Value[struct{}]{}
+	})
+	return result
+}
+
+func parseFilePermissions(permStr string) os.FileMode {
+	perm, _ := strconv.ParseInt(permStr, 8, 64)
+	return os.FileMode(perm)
 }
