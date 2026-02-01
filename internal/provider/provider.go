@@ -291,7 +291,10 @@ func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileM
 	return result.GetError()
 }
 
-func parseFilePermissions(permStr string) os.FileMode {
-	perm, _ := strconv.ParseInt(permStr, 8, 64)
-	return os.FileMode(perm)
+func parseFilePermissions(permStr string) (os.FileMode, error) {
+	perm, err := strconv.ParseInt(permStr, 8, 64)
+	if err != nil {
+		return 0, err
+	}
+	return os.FileMode(perm), nil
 }

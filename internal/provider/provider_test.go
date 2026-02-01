@@ -16,8 +16,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
@@ -383,18 +386,33 @@ func TestParseFilePermissions(t *testing.T) {
 		{"0777", 0777},
 		{"600", 0600},
 		{"0700", 0700},
-		{"", 0},
-		{"invalid", 0},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := parseFilePermissions(tt.input)
+		t.Run("valid mode: "+tt.input, func(t *testing.T) {
+			got, err := parseFilePermissions(tt.input)
+			if err != nil {
+				t.Errorf("parseFilePermissions(%q) returned error: %v", tt.input, err)
+			}
 			if got != tt.want {
 				t.Errorf("parseFilePermissions(%q) = %04o, want %04o", tt.input, got, tt.want)
 			}
 		})
 	}
+
+	t.Run("invalid mode: invalid", func(t *testing.T) {
+		_, err := parseFilePermissions("invalid")
+		if err == nil || !strings.Contains(err.Error(), "invalid syntax") {
+			t.Error("expected error for invalid mode, got " + fmt.Sprintf("%v", err))
+		}
+	})
+
+	t.Run("invalid mode: 9999", func(t *testing.T) {
+		_, err := parseFilePermissions("9999")
+		if err == nil || !strings.Contains(err.Error(), "invalid syntax") {
+			t.Error("expected error for invalid mode, got " + fmt.Sprintf("%v", err))
+		}
+	})
 }
 
 func TestScpProvider_Metadata(t *testing.T) {
@@ -424,6 +442,264 @@ func TestScpProvider_Resources(t *testing.T) {
 	if len(rs) != 2 {
 		t.Errorf("Resources length = %d, want 2", len(rs))
 	}
+}
+
+func TestScpProvider_Schema(t *testing.T) {
+	p := &scpProvider{}
+	var resp provider.SchemaResponse
+	p.Schema(context.Background(), provider.SchemaRequest{}, &resp)
+	s := resp.Schema
+
+	// Required attribute
+	if attr, ok := s.Attributes["host"]; ok {
+		if !attr.IsRequired() {
+			t.Error("host should be required")
+		}
+	} else {
+		t.Error("host attribute not found")
+	}
+
+	// Optional attributes
+	optionalAttrs := []string{"port", "user", "password", "key_path", "known_hosts_path", "ignore_host_key", "ssh_config_path"}
+	for _, name := range optionalAttrs {
+		if attr, ok := s.Attributes[name]; ok {
+			if !attr.IsOptional() {
+				t.Errorf("%s should be optional", name)
+			}
+		} else {
+			t.Errorf("%s attribute not found", name)
+		}
+	}
+
+	// Password must be sensitive
+	if attr, ok := s.Attributes["password"]; ok {
+		if strAttr, ok := attr.(schema.StringAttribute); ok {
+			if !strAttr.Sensitive {
+				t.Error("password should be sensitive")
+			}
+		} else {
+			t.Error("password should be a StringAttribute")
+		}
+	} else {
+		t.Error("password attribute not found")
+	}
+}
+
+func TestScpProvider_Configure(t *testing.T) {
+	// Helper function to create provider attribute types
+	providerAttrTypes := func() map[string]tftypes.Type {
+		return map[string]tftypes.Type{
+			"host":             tftypes.String,
+			"port":             tftypes.Number,
+			"user":             tftypes.String,
+			"password":         tftypes.String,
+			"key_path":         tftypes.String,
+			"known_hosts_path": tftypes.String,
+			"ignore_host_key":  tftypes.Bool,
+			"ssh_config_path":  tftypes.String,
+		}
+	}
+
+	t.Run("parses all fields", func(t *testing.T) {
+		p := &scpProvider{}
+
+		// Create config with all fields set
+		configValue := tftypes.NewValue(
+			tftypes.Object{AttributeTypes: providerAttrTypes()},
+			map[string]tftypes.Value{
+				"host":             tftypes.NewValue(tftypes.String, "example.com"),
+				"port":             tftypes.NewValue(tftypes.Number, 2222),
+				"user":             tftypes.NewValue(tftypes.String, "testuser"),
+				"password":         tftypes.NewValue(tftypes.String, "testpass"),
+				"key_path":         tftypes.NewValue(tftypes.String, "~/.ssh/id_rsa"),
+				"known_hosts_path": tftypes.NewValue(tftypes.String, "~/.ssh/known_hosts"),
+				"ignore_host_key":  tftypes.NewValue(tftypes.Bool, true),
+				"ssh_config_path":  tftypes.NewValue(tftypes.String, "~/.ssh/config"),
+			},
+		)
+
+		// Get provider schema
+		var schemaResp provider.SchemaResponse
+		p.Schema(context.Background(), provider.SchemaRequest{}, &schemaResp)
+
+		config := tfsdk.Config{
+			Schema: schemaResp.Schema,
+			Raw:    configValue,
+		}
+
+		var resp provider.ConfigureResponse
+		p.Configure(context.Background(), provider.ConfigureRequest{Config: config}, &resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("unexpected error diagnostics: %v", resp.Diagnostics)
+		}
+
+		if p.config.Host != "example.com" {
+			t.Errorf("Host = %q, want %q", p.config.Host, "example.com")
+		}
+		if p.config.Port != 2222 {
+			t.Errorf("Port = %d, want %d", p.config.Port, 2222)
+		}
+		if p.config.User != "testuser" {
+			t.Errorf("User = %q, want %q", p.config.User, "testuser")
+		}
+		if p.config.Password != "testpass" {
+			t.Errorf("Password = %q, want %q", p.config.Password, "testpass")
+		}
+		if p.config.KeyPath != "~/.ssh/id_rsa" {
+			t.Errorf("KeyPath = %q, want %q", p.config.KeyPath, "~/.ssh/id_rsa")
+		}
+		if p.config.KnownHostsPath != "~/.ssh/known_hosts" {
+			t.Errorf("KnownHostsPath = %q, want %q", p.config.KnownHostsPath, "~/.ssh/known_hosts")
+		}
+		if !p.config.IgnoreHostKey {
+			t.Error("IgnoreHostKey should be true")
+		}
+		if p.config.SSHConfigPath != "~/.ssh/config" {
+			t.Errorf("SSHConfigPath = %q, want %q", p.config.SSHConfigPath, "~/.ssh/config")
+		}
+	})
+
+	t.Run("handles null port", func(t *testing.T) {
+		p := &scpProvider{}
+
+		configValue := tftypes.NewValue(
+			tftypes.Object{AttributeTypes: providerAttrTypes()},
+			map[string]tftypes.Value{
+				"host":             tftypes.NewValue(tftypes.String, "example.com"),
+				"port":             tftypes.NewValue(tftypes.Number, nil),
+				"user":             tftypes.NewValue(tftypes.String, nil),
+				"password":         tftypes.NewValue(tftypes.String, nil),
+				"key_path":         tftypes.NewValue(tftypes.String, nil),
+				"known_hosts_path": tftypes.NewValue(tftypes.String, nil),
+				"ignore_host_key":  tftypes.NewValue(tftypes.Bool, nil),
+				"ssh_config_path":  tftypes.NewValue(tftypes.String, nil),
+			},
+		)
+
+		var schemaResp provider.SchemaResponse
+		p.Schema(context.Background(), provider.SchemaRequest{}, &schemaResp)
+
+		config := tfsdk.Config{
+			Schema: schemaResp.Schema,
+			Raw:    configValue,
+		}
+
+		var resp provider.ConfigureResponse
+		p.Configure(context.Background(), provider.ConfigureRequest{Config: config}, &resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("unexpected error diagnostics: %v", resp.Diagnostics)
+		}
+
+		if p.config.Port != 0 {
+			t.Errorf("Port = %d, want 0 when null", p.config.Port)
+		}
+	})
+
+	t.Run("TF_ACC mode sets retry behavior", func(t *testing.T) {
+		// Save and restore TF_ACC
+		oldVal := os.Getenv("TF_ACC")
+		defer func() {
+			if oldVal != "" {
+				os.Setenv("TF_ACC", oldVal)
+			} else {
+				os.Unsetenv("TF_ACC")
+			}
+		}()
+
+		// Set TF_ACC
+		os.Setenv("TF_ACC", "1")
+
+		p := &scpProvider{}
+
+		configValue := tftypes.NewValue(
+			tftypes.Object{AttributeTypes: providerAttrTypes()},
+			map[string]tftypes.Value{
+				"host":             tftypes.NewValue(tftypes.String, "example.com"),
+				"port":             tftypes.NewValue(tftypes.Number, nil),
+				"user":             tftypes.NewValue(tftypes.String, nil),
+				"password":         tftypes.NewValue(tftypes.String, nil),
+				"key_path":         tftypes.NewValue(tftypes.String, nil),
+				"known_hosts_path": tftypes.NewValue(tftypes.String, nil),
+				"ignore_host_key":  tftypes.NewValue(tftypes.Bool, nil),
+				"ssh_config_path":  tftypes.NewValue(tftypes.String, nil),
+			},
+		)
+
+		var schemaResp provider.SchemaResponse
+		p.Schema(context.Background(), provider.SchemaRequest{}, &schemaResp)
+
+		config := tfsdk.Config{
+			Schema: schemaResp.Schema,
+			Raw:    configValue,
+		}
+
+		var resp provider.ConfigureResponse
+		p.Configure(context.Background(), provider.ConfigureRequest{Config: config}, &resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("unexpected error diagnostics: %v", resp.Diagnostics)
+		}
+
+		if p.config.ConnectionRetries != 6 {
+			t.Errorf("ConnectionRetries = %d, want 6 in TF_ACC mode", p.config.ConnectionRetries)
+		}
+		if p.config.ConnectionRetryBaseDelay != 2000 {
+			t.Errorf("ConnectionRetryBaseDelay = %d, want 2000 in TF_ACC mode", p.config.ConnectionRetryBaseDelay)
+		}
+	})
+
+	t.Run("non-TF_ACC mode uses default retry behavior", func(t *testing.T) {
+		// Ensure TF_ACC is not set
+		oldVal := os.Getenv("TF_ACC")
+		defer func() {
+			if oldVal != "" {
+				os.Setenv("TF_ACC", oldVal)
+			} else {
+				os.Unsetenv("TF_ACC")
+			}
+		}()
+		os.Unsetenv("TF_ACC")
+
+		p := &scpProvider{}
+
+		configValue := tftypes.NewValue(
+			tftypes.Object{AttributeTypes: providerAttrTypes()},
+			map[string]tftypes.Value{
+				"host":             tftypes.NewValue(tftypes.String, "example.com"),
+				"port":             tftypes.NewValue(tftypes.Number, nil),
+				"user":             tftypes.NewValue(tftypes.String, nil),
+				"password":         tftypes.NewValue(tftypes.String, nil),
+				"key_path":         tftypes.NewValue(tftypes.String, nil),
+				"known_hosts_path": tftypes.NewValue(tftypes.String, nil),
+				"ignore_host_key":  tftypes.NewValue(tftypes.Bool, nil),
+				"ssh_config_path":  tftypes.NewValue(tftypes.String, nil),
+			},
+		)
+
+		var schemaResp provider.SchemaResponse
+		p.Schema(context.Background(), provider.SchemaRequest{}, &schemaResp)
+
+		config := tfsdk.Config{
+			Schema: schemaResp.Schema,
+			Raw:    configValue,
+		}
+
+		var resp provider.ConfigureResponse
+		p.Configure(context.Background(), provider.ConfigureRequest{Config: config}, &resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("unexpected error diagnostics: %v", resp.Diagnostics)
+		}
+
+		if p.config.ConnectionRetries != 0 {
+			t.Errorf("ConnectionRetries = %d, want 0 (default) in non-TF_ACC mode", p.config.ConnectionRetries)
+		}
+		if p.config.ConnectionRetryBaseDelay != 0 {
+			t.Errorf("ConnectionRetryBaseDelay = %d, want 0 (default) in non-TF_ACC mode", p.config.ConnectionRetryBaseDelay)
+		}
+	})
 }
 
 func TestAccProvider_MissingHost(t *testing.T) {

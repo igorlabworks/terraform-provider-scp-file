@@ -208,12 +208,31 @@ func (r *scpFileResourceBase) doCreate(ctx context.Context, req resource.CreateR
 		return
 	}
 
+	expectedPerm, err := parseFilePermissions(plan.FilePermission.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			fmt.Sprintf("Create %s error", r.resConfig.DisplayName),
+			"An unexpected error occurred while parsing file permissions\n\n"+
+				fmt.Sprintf("Original Error: %s", err),
+		)
+		return
+	}
+	expectedDirPerm, err := parseFilePermissions(plan.DirectoryPermission.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError(
+			fmt.Sprintf("Create %s error", r.resConfig.DisplayName),
+			"An unexpected error occurred while parsing directory permissions\n\n"+
+				fmt.Sprintf("Original Error: %s", err),
+		)
+		return
+	}
+
 	if err := writeRemoteFile(
 		r.config,
 		plan.Filename.ValueString(),
 		content,
-		parseFilePermissions(plan.FilePermission.ValueString()),
-		parseFilePermissions(plan.DirectoryPermission.ValueString()),
+		expectedPerm,
+		expectedDirPerm,
 	); err != nil {
 		resp.Diagnostics.AddError(
 			fmt.Sprintf("Create %s error", r.resConfig.DisplayName),
@@ -273,7 +292,18 @@ func (r *scpFileResourceBase) doRead(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	expectedPerm := parseFilePermissions(state.FilePermission.ValueString())
+	expectedPerm, err := parseFilePermissions(state.FilePermission.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"Error Reading "+
+				r.resConfig.DisplayName,
+			"An unexpected error occurred while parsing expected file permissions\n\n"+
+				fmt.Sprintf("Original Error: %s", err)+
+				"\n\nDeleting resource from state.")
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	actualPerm := fileInfo.Mode & os.ModePerm
 	if actualPerm != expectedPerm {
 		resp.State.RemoveResource(ctx)
