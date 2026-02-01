@@ -1191,12 +1191,12 @@ type mockFileInfo struct {
 	size int64
 }
 
-func (i *mockFileInfo) Name() string      { return "mock" }
-func (i *mockFileInfo) Size() int64       { return i.size }
-func (i *mockFileInfo) Mode() os.FileMode { return i.mode }
+func (i *mockFileInfo) Name() string       { return "mock" }
+func (i *mockFileInfo) Size() int64        { return i.size }
+func (i *mockFileInfo) Mode() os.FileMode  { return i.mode }
 func (i *mockFileInfo) ModTime() time.Time { return time.Time{} }
-func (i *mockFileInfo) IsDir() bool       { return i.mode.IsDir() }
-func (i *mockFileInfo) Sys() interface{}  { return nil }
+func (i *mockFileInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i *mockFileInfo) Sys() interface{}   { return nil }
 
 type mockConn struct {
 	closed bool

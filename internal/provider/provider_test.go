@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -933,8 +932,6 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 
 	tempDir := t.TempDir()
 	knownHostsPath := filepath.Join(tempDir, "known_hosts")
-
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	var output []byte
 	var err error
