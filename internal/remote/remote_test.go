@@ -2,6 +2,7 @@ package remote
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -1082,5 +1083,983 @@ func TestDefaultRetryValues(t *testing.T) {
 	// Verify error message says 3 attempts
 	if !strings.Contains(err.Error(), "after 3 attempts") {
 		t.Errorf("Expected default of 3 attempts, error: %v", err)
+	}
+}
+
+// --- Mock infrastructure for SFTP operation tests ---
+
+type mockFile struct {
+	content  []byte
+	pos      int
+	writeErr error
+	written  []byte
+}
+
+func (f *mockFile) Read(p []byte) (int, error) {
+	if f.pos >= len(f.content) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.content[f.pos:])
+	f.pos += n
+	if f.pos >= len(f.content) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (f *mockFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	f.written = append(f.written, p...)
+	return len(p), nil
+}
+
+func (f *mockFile) Close() error { return nil }
+
+type mockSFTPOps struct {
+	createFn func(path string) (io.ReadWriteCloser, error)
+	openFn   func(path string) (io.ReadCloser, error)
+	statFn   func(path string) (os.FileInfo, error)
+	mkdirFn  func(path string) error
+	chmodFn  func(path string, mode os.FileMode) error
+	removeFn func(path string) error
+	closeFn  func() error
+}
+
+func (m *mockSFTPOps) Create(path string) (io.ReadWriteCloser, error) {
+	if m.createFn != nil {
+		return m.createFn(path)
+	}
+	return nil, fmt.Errorf("Create not configured")
+}
+
+func (m *mockSFTPOps) Open(path string) (io.ReadCloser, error) {
+	if m.openFn != nil {
+		return m.openFn(path)
+	}
+	return nil, fmt.Errorf("Open not configured")
+}
+
+func (m *mockSFTPOps) Stat(path string) (os.FileInfo, error) {
+	if m.statFn != nil {
+		return m.statFn(path)
+	}
+	return nil, fmt.Errorf("Stat not configured")
+}
+
+func (m *mockSFTPOps) Mkdir(path string) error {
+	if m.mkdirFn != nil {
+		return m.mkdirFn(path)
+	}
+	return nil
+}
+
+func (m *mockSFTPOps) Chmod(path string, mode os.FileMode) error {
+	if m.chmodFn != nil {
+		return m.chmodFn(path, mode)
+	}
+	return nil
+}
+
+func (m *mockSFTPOps) Remove(path string) error {
+	if m.removeFn != nil {
+		return m.removeFn(path)
+	}
+	return nil
+}
+
+func (m *mockSFTPOps) Close() error {
+	if m.closeFn != nil {
+		return m.closeFn()
+	}
+	return nil
+}
+
+type mockSSHCloser struct {
+	closeErr error
+	closed   bool
+}
+
+func (m *mockSSHCloser) Close() error {
+	m.closed = true
+	return m.closeErr
+}
+
+type mockFileInfo struct {
+	mode os.FileMode
+	size int64
+}
+
+func (i *mockFileInfo) Name() string      { return "mock" }
+func (i *mockFileInfo) Size() int64       { return i.size }
+func (i *mockFileInfo) Mode() os.FileMode { return i.mode }
+func (i *mockFileInfo) ModTime() time.Time { return time.Time{} }
+func (i *mockFileInfo) IsDir() bool       { return i.mode.IsDir() }
+func (i *mockFileInfo) Sys() interface{}  { return nil }
+
+type mockConn struct {
+	closed bool
+}
+
+func (c *mockConn) Read([]byte) (int, error)         { return 0, nil }
+func (c *mockConn) Write([]byte) (int, error)        { return 0, nil }
+func (c *mockConn) Close() error                     { c.closed = true; return nil }
+func (c *mockConn) LocalAddr() net.Addr              { return nil }
+func (c *mockConn) RemoteAddr() net.Addr             { return nil }
+func (c *mockConn) SetDeadline(time.Time) error      { return nil }
+func (c *mockConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *mockConn) SetWriteDeadline(time.Time) error { return nil }
+
+// --- WriteFile tests ---
+
+func TestWriteFile_Success(t *testing.T) {
+	var createdPath string
+	var chmodPath string
+	var chmodMode os.FileMode
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+		},
+		createFn: func(path string) (io.ReadWriteCloser, error) {
+			createdPath = path
+			return &mockFile{}, nil
+		},
+		chmodFn: func(path string, mode os.FileMode) error {
+			chmodPath = path
+			chmodMode = mode
+			return nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if createdPath != "/remote/file.txt" {
+		t.Errorf("Expected Create called with /remote/file.txt, got %s", createdPath)
+	}
+	if chmodPath != "/remote/file.txt" {
+		t.Errorf("Expected Chmod called with /remote/file.txt, got %s", chmodPath)
+	}
+	if chmodMode != 0644 {
+		t.Errorf("Expected Chmod mode 0644, got %04o", chmodMode)
+	}
+}
+
+func TestWriteFile_DirCreationFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return nil, fmt.Errorf("not found")
+		},
+		mkdirFn: func(path string) error {
+			return fmt.Errorf("mkdir failed")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+	if err == nil {
+		t.Fatal("Expected error when mkdir fails")
+	}
+	if !strings.Contains(err.Error(), "failed to create remote directory") {
+		t.Errorf("Expected dir creation error, got: %v", err)
+	}
+}
+
+func TestWriteFile_CreateFileFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+		},
+		createFn: func(path string) (io.ReadWriteCloser, error) {
+			return nil, fmt.Errorf("create failed")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+	if err == nil {
+		t.Fatal("Expected error when Create fails")
+	}
+	if !strings.Contains(err.Error(), "failed to create remote file") {
+		t.Errorf("Expected file creation error, got: %v", err)
+	}
+}
+
+func TestWriteFile_WriteFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+		},
+		createFn: func(path string) (io.ReadWriteCloser, error) {
+			return &mockFile{writeErr: fmt.Errorf("write failed")}, nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+	if err == nil {
+		t.Fatal("Expected error when Write fails")
+	}
+	if !strings.Contains(err.Error(), "failed to write to remote file") {
+		t.Errorf("Expected write error, got: %v", err)
+	}
+}
+
+func TestWriteFile_ChmodFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+		},
+		createFn: func(path string) (io.ReadWriteCloser, error) {
+			return &mockFile{}, nil
+		},
+		chmodFn: func(path string, mode os.FileMode) error {
+			return fmt.Errorf("chmod failed")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+	if err == nil {
+		t.Fatal("Expected error when Chmod fails")
+	}
+	if !strings.Contains(err.Error(), "failed to set permissions on remote file") {
+		t.Errorf("Expected chmod error, got: %v", err)
+	}
+}
+
+// --- ReadFile tests ---
+
+func TestReadFile_Success(t *testing.T) {
+	mock := &mockSFTPOps{
+		openFn: func(path string) (io.ReadCloser, error) {
+			return &mockFile{content: []byte("file contents")}, nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	data, err := client.ReadFile("/remote/file.txt")
+
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(data) != "file contents" {
+		t.Errorf("Expected 'file contents', got %q", string(data))
+	}
+}
+
+func TestReadFile_OpenFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		openFn: func(path string) (io.ReadCloser, error) {
+			return nil, fmt.Errorf("no such file")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	_, err := client.ReadFile("/remote/missing.txt")
+
+	if err == nil {
+		t.Fatal("Expected error when Open fails")
+	}
+	if !strings.Contains(err.Error(), "failed to open remote file") {
+		t.Errorf("Expected open error, got: %v", err)
+	}
+}
+
+func TestReadFile_ReadFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		openFn: func(path string) (io.ReadCloser, error) {
+			return &mockFile{content: nil}, nil // empty content, Read returns EOF immediately
+		},
+	}
+
+	// An empty file is valid; to force a read error we need a reader that errors.
+	mock.openFn = func(path string) (io.ReadCloser, error) {
+		return &errReader{}, nil
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	_, err := client.ReadFile("/remote/file.txt")
+
+	if err == nil {
+		t.Fatal("Expected error when Read fails")
+	}
+	if !strings.Contains(err.Error(), "failed to read remote file") {
+		t.Errorf("Expected read error, got: %v", err)
+	}
+}
+
+// errReader is an io.ReadCloser that always returns an error on Read.
+type errReader struct{}
+
+func (e *errReader) Read([]byte) (int, error) { return 0, fmt.Errorf("read error") }
+func (e *errReader) Close() error             { return nil }
+
+// --- FileExists tests ---
+
+func TestFileExists_True(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return &mockFileInfo{}, nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	exists, err := client.FileExists("/remote/file.txt")
+
+	if err != nil {
+		t.Fatalf("FileExists failed: %v", err)
+	}
+	if !exists {
+		t.Error("Expected file to exist")
+	}
+}
+
+func TestFileExists_False(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return nil, fmt.Errorf("not found")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	exists, err := client.FileExists("/remote/missing.txt")
+
+	if err != nil {
+		t.Fatalf("FileExists failed: %v", err)
+	}
+	if exists {
+		t.Error("Expected file to not exist")
+	}
+}
+
+// --- GetFileInfo tests ---
+
+func TestGetFileInfo_Success(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return &mockFileInfo{mode: 0644, size: 1234}, nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	info, err := client.GetFileInfo("/remote/file.txt")
+
+	if err != nil {
+		t.Fatalf("GetFileInfo failed: %v", err)
+	}
+	if info.Mode != 0644 {
+		t.Errorf("Expected mode 0644, got %04o", info.Mode)
+	}
+	if info.Size != 1234 {
+		t.Errorf("Expected size 1234, got %d", info.Size)
+	}
+}
+
+func TestGetFileInfo_StatFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return nil, fmt.Errorf("stat failed")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	_, err := client.GetFileInfo("/remote/missing.txt")
+
+	if err == nil {
+		t.Fatal("Expected error when Stat fails")
+	}
+	if !strings.Contains(err.Error(), "failed to stat remote file") {
+		t.Errorf("Expected stat error, got: %v", err)
+	}
+}
+
+// --- DeleteFile tests ---
+
+func TestDeleteFile_Success(t *testing.T) {
+	var removedPath string
+	mock := &mockSFTPOps{
+		removeFn: func(path string) error {
+			removedPath = path
+			return nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.DeleteFile("/remote/file.txt")
+
+	if err != nil {
+		t.Fatalf("DeleteFile failed: %v", err)
+	}
+	if removedPath != "/remote/file.txt" {
+		t.Errorf("Expected Remove called with /remote/file.txt, got %s", removedPath)
+	}
+}
+
+func TestDeleteFile_Fails(t *testing.T) {
+	mock := &mockSFTPOps{
+		removeFn: func(path string) error {
+			return fmt.Errorf("remove failed")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.DeleteFile("/remote/file.txt")
+
+	if err == nil {
+		t.Fatal("Expected error when Remove fails")
+	}
+	if !strings.Contains(err.Error(), "remove failed") {
+		t.Errorf("Expected remove error, got: %v", err)
+	}
+}
+
+// --- Chmod tests ---
+
+func TestChmod_Success(t *testing.T) {
+	var chmodPath string
+	var chmodMode os.FileMode
+	mock := &mockSFTPOps{
+		chmodFn: func(path string, mode os.FileMode) error {
+			chmodPath = path
+			chmodMode = mode
+			return nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.Chmod("/remote/file.txt", 0755)
+
+	if err != nil {
+		t.Fatalf("Chmod failed: %v", err)
+	}
+	if chmodPath != "/remote/file.txt" {
+		t.Errorf("Expected Chmod path /remote/file.txt, got %s", chmodPath)
+	}
+	if chmodMode != 0755 {
+		t.Errorf("Expected Chmod mode 0755, got %04o", chmodMode)
+	}
+}
+
+func TestChmod_Fails(t *testing.T) {
+	mock := &mockSFTPOps{
+		chmodFn: func(path string, mode os.FileMode) error {
+			return fmt.Errorf("chmod failed")
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.Chmod("/remote/file.txt", 0755)
+
+	if err == nil {
+		t.Fatal("Expected error when Chmod fails")
+	}
+	if !strings.Contains(err.Error(), "chmod failed") {
+		t.Errorf("Expected chmod error, got: %v", err)
+	}
+}
+
+// --- mkdirAllWithMode tests ---
+
+func TestMkdirAllWithMode_CreatesNestedDirs(t *testing.T) {
+	var mkdired []string
+	var chmoded []string
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return nil, fmt.Errorf("not found")
+		},
+		mkdirFn: func(path string) error {
+			mkdired = append(mkdired, path)
+			return nil
+		},
+		chmodFn: func(path string, mode os.FileMode) error {
+			chmoded = append(chmoded, path)
+			return nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+	if err != nil {
+		t.Fatalf("mkdirAllWithMode failed: %v", err)
+	}
+	expected := []string{"/a", "/a/b", "/a/b/c"}
+	if len(mkdired) != len(expected) {
+		t.Fatalf("Expected %d mkdir calls, got %d: %v", len(expected), len(mkdired), mkdired)
+	}
+	for i, dir := range expected {
+		if mkdired[i] != dir {
+			t.Errorf("mkdir[%d]: expected %s, got %s", i, dir, mkdired[i])
+		}
+	}
+	if len(chmoded) != len(expected) {
+		t.Fatalf("Expected %d chmod calls, got %d", len(expected), len(chmoded))
+	}
+}
+
+func TestMkdirAllWithMode_PartialExists(t *testing.T) {
+	var mkdired []string
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			if path == "/a" || path == "/a/b" {
+				return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+			}
+			return nil, fmt.Errorf("not found")
+		},
+		mkdirFn: func(path string) error {
+			mkdired = append(mkdired, path)
+			return nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+	if err != nil {
+		t.Fatalf("mkdirAllWithMode failed: %v", err)
+	}
+	if len(mkdired) != 1 || mkdired[0] != "/a/b/c" {
+		t.Errorf("Expected only /a/b/c to be created, got: %v", mkdired)
+	}
+}
+
+func TestMkdirAllWithMode_MkdirFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return nil, fmt.Errorf("not found")
+		},
+		mkdirFn: func(path string) error {
+			return fmt.Errorf("mkdir failed on %s", path)
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+	if err == nil {
+		t.Fatal("Expected error when Mkdir fails")
+	}
+	if !strings.Contains(err.Error(), "mkdir failed") {
+		t.Errorf("Expected mkdir error, got: %v", err)
+	}
+}
+
+func TestMkdirAllWithMode_ChmodFails(t *testing.T) {
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return nil, fmt.Errorf("not found")
+		},
+		mkdirFn: func(path string) error {
+			return nil
+		},
+		chmodFn: func(path string, mode os.FileMode) error {
+			return fmt.Errorf("chmod failed on %s", path)
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+	if err == nil {
+		t.Fatal("Expected error when Chmod fails")
+	}
+	if !strings.Contains(err.Error(), "chmod failed") {
+		t.Errorf("Expected chmod error, got: %v", err)
+	}
+}
+
+func TestMkdirAllWithMode_RootPath(t *testing.T) {
+	var mkdired []string
+	mock := &mockSFTPOps{
+		mkdirFn: func(path string) error {
+			mkdired = append(mkdired, path)
+			return nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.mkdirAllWithMode("/", 0755)
+
+	if err != nil {
+		t.Fatalf("mkdirAllWithMode for / failed: %v", err)
+	}
+	if len(mkdired) != 0 {
+		t.Errorf("Expected no mkdir calls for root, got: %v", mkdired)
+	}
+}
+
+func TestMkdirAllWithMode_RelativePath(t *testing.T) {
+	var mkdired []string
+	mock := &mockSFTPOps{
+		statFn: func(path string) (os.FileInfo, error) {
+			return nil, fmt.Errorf("not found")
+		},
+		mkdirFn: func(path string) error {
+			mkdired = append(mkdired, path)
+			return nil
+		},
+	}
+
+	client := &SFTPClient{sftpClient: mock}
+	err := client.mkdirAllWithMode("a/b", 0755)
+
+	if err != nil {
+		t.Fatalf("mkdirAllWithMode failed: %v", err)
+	}
+	expected := []string{"a", "a/b"}
+	if len(mkdired) != len(expected) {
+		t.Fatalf("Expected %d mkdir calls, got %d: %v", len(expected), len(mkdired), mkdired)
+	}
+	for i, dir := range expected {
+		if mkdired[i] != dir {
+			t.Errorf("mkdir[%d]: expected %s, got %s", i, dir, mkdired[i])
+		}
+	}
+}
+
+// --- Close tests ---
+
+func TestClose_AllClients(t *testing.T) {
+	sftpMock := &mockSFTPOps{}
+	sshMock := &mockSSHCloser{}
+	agentConn := &mockConn{}
+
+	client := &SFTPClient{
+		sftpClient: sftpMock,
+		sshClient:  sshMock,
+		agentConn:  agentConn,
+	}
+
+	err := client.Close()
+
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if !sshMock.closed {
+		t.Error("Expected SSH client to be closed")
+	}
+	if !agentConn.closed {
+		t.Error("Expected agent connection to be closed")
+	}
+	if client.sftpClient != nil {
+		t.Error("Expected sftpClient to be nil after Close")
+	}
+	if client.sshClient != nil {
+		t.Error("Expected sshClient to be nil after Close")
+	}
+	if client.agentConn != nil {
+		t.Error("Expected agentConn to be nil after Close")
+	}
+}
+
+func TestClose_OnlySSH(t *testing.T) {
+	sshMock := &mockSSHCloser{}
+	client := &SFTPClient{sshClient: sshMock}
+
+	err := client.Close()
+
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if !sshMock.closed {
+		t.Error("Expected SSH client to be closed")
+	}
+}
+
+func TestClose_NilClients(t *testing.T) {
+	client := &SFTPClient{}
+
+	err := client.Close()
+	if err != nil {
+		t.Fatalf("Close with all nil clients failed: %v", err)
+	}
+}
+
+func TestClose_SSHError(t *testing.T) {
+	sshMock := &mockSSHCloser{closeErr: fmt.Errorf("ssh close failed")}
+	client := &SFTPClient{sshClient: sshMock}
+
+	err := client.Close()
+
+	if err == nil {
+		t.Fatal("Expected error from SSH Close")
+	}
+	if err.Error() != "ssh close failed" {
+		t.Errorf("Expected 'ssh close failed', got: %v", err)
+	}
+}
+
+// --- NewSFTPClient tests ---
+
+func TestNewSFTPClient_AppliesSSHConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config")
+
+	configContent := `Host myhost
+    Hostname actual.host.com
+    User sshuser
+    Port 2222
+    IdentityFile ~/.ssh/mykey
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write SSH config: %v", err)
+	}
+
+	config := &Config{
+		Host:          "myhost",
+		SSHConfigPath: configPath,
+	}
+
+	client, err := NewSFTPClient(config)
+	if err != nil {
+		t.Fatalf("NewSFTPClient failed: %v", err)
+	}
+
+	if client.config.Host != "actual.host.com" {
+		t.Errorf("Expected Host 'actual.host.com', got '%s'", client.config.Host)
+	}
+	if client.config.User != "sshuser" {
+		t.Errorf("Expected User 'sshuser', got '%s'", client.config.User)
+	}
+	if client.config.Port != 2222 {
+		t.Errorf("Expected Port 2222, got %d", client.config.Port)
+	}
+}
+
+func TestNewSFTPClient_NoSSHConfig(t *testing.T) {
+	config := &Config{
+		Host:          "example.com",
+		SSHConfigPath: "/nonexistent/path/to/ssh/config",
+		User:          "testuser",
+		Port:          22,
+	}
+
+	client, err := NewSFTPClient(config)
+	if err != nil {
+		t.Fatalf("NewSFTPClient failed: %v", err)
+	}
+
+	// Config should be unchanged since SSH config file doesn't exist
+	if client.config.Host != "example.com" {
+		t.Errorf("Expected Host 'example.com', got '%s'", client.config.Host)
+	}
+	if client.config.User != "testuser" {
+		t.Errorf("Expected User 'testuser', got '%s'", client.config.User)
+	}
+	if client.config.Port != 22 {
+		t.Errorf("Expected Port 22, got %d", client.config.Port)
+	}
+}
+
+// --- parsePort tests ---
+
+func TestParsePort_Valid(t *testing.T) {
+	port, err := parsePort("22")
+	if err != nil {
+		t.Fatalf("parsePort(\"22\") failed: %v", err)
+	}
+	if port != 22 {
+		t.Errorf("Expected 22, got %d", port)
+	}
+}
+
+func TestParsePort_Invalid(t *testing.T) {
+	_, err := parsePort("abc")
+	if err == nil {
+		t.Fatal("Expected error for 'abc'")
+	}
+	if !strings.Contains(err.Error(), "invalid port") {
+		t.Errorf("Expected 'invalid port' error, got: %v", err)
+	}
+}
+
+func TestParsePort_Empty(t *testing.T) {
+	port, err := parsePort("")
+	if err != nil {
+		t.Fatalf("parsePort(\"\") failed: %v", err)
+	}
+	if port != 0 {
+		t.Errorf("Expected 0 for empty string, got %d", port)
+	}
+}
+
+func TestParsePort_WithLetters(t *testing.T) {
+	_, err := parsePort("22a")
+	if err == nil {
+		t.Fatal("Expected error for '22a'")
+	}
+	if !strings.Contains(err.Error(), "invalid port") {
+		t.Errorf("Expected 'invalid port' error, got: %v", err)
+	}
+}
+
+// --- SSH config edge case tests ---
+
+func TestParseSSHConfig_MultipleHostPatterns(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config")
+
+	configContent := `Host foo bar baz
+    User multiuser
+    Port 3333
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write SSH config: %v", err)
+	}
+
+	config, err := ParseSSHConfig(configPath)
+	if err != nil {
+		t.Fatalf("ParseSSHConfig failed: %v", err)
+	}
+
+	for _, host := range []string{"foo", "bar", "baz"} {
+		entry := config.GetEntry(host)
+		if entry == nil {
+			t.Fatalf("Expected entry for %q, got nil", host)
+		}
+		if entry.User != "multiuser" {
+			t.Errorf("Host %q: expected User 'multiuser', got '%s'", host, entry.User)
+		}
+		if entry.Port != "3333" {
+			t.Errorf("Host %q: expected Port '3333', got '%s'", host, entry.Port)
+		}
+	}
+}
+
+func TestParseSSHConfig_QuotedValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config")
+
+	configContent := `Host quoted
+    User "quoteduser"
+    IdentityFile "~/.ssh/my key"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write SSH config: %v", err)
+	}
+
+	config, err := ParseSSHConfig(configPath)
+	if err != nil {
+		t.Fatalf("ParseSSHConfig failed: %v", err)
+	}
+
+	entry := config.GetEntry("quoted")
+	if entry == nil {
+		t.Fatal("Expected entry for 'quoted', got nil")
+	}
+	if entry.User != "quoteduser" {
+		t.Errorf("Expected User 'quoteduser' (quotes stripped), got '%s'", entry.User)
+	}
+	// IdentityFile should have quotes stripped and tilde expanded
+	home, _ := os.UserHomeDir()
+	expectedKey := filepath.Join(home, ".ssh", "my key")
+	if entry.IdentityFile != expectedKey {
+		t.Errorf("Expected IdentityFile '%s', got '%s'", expectedKey, entry.IdentityFile)
+	}
+}
+
+func TestParseSSHConfig_TildeExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home directory")
+	}
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config")
+
+	configContent := `Host tildehost
+    IdentityFile ~/.ssh/tilde_key
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write SSH config: %v", err)
+	}
+
+	config, err := ParseSSHConfig(configPath)
+	if err != nil {
+		t.Fatalf("ParseSSHConfig failed: %v", err)
+	}
+
+	entry := config.GetEntry("tildehost")
+	if entry == nil {
+		t.Fatal("Expected entry for 'tildehost', got nil")
+	}
+
+	expectedKey := filepath.Join(home, ".ssh", "tilde_key")
+	if entry.IdentityFile != expectedKey {
+		t.Errorf("Expected expanded path '%s', got '%s'", expectedKey, entry.IdentityFile)
+	}
+}
+
+func TestLoadDefaultKeys_SkipsInvalidKey(t *testing.T) {
+	tmpHome := t.TempDir()
+	sshDir := filepath.Join(tmpHome, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatalf("Failed to create .ssh dir: %v", err)
+	}
+
+	// Write an invalid (non-parseable) key file as id_ed25519
+	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte("not a valid key"), 0600); err != nil {
+		t.Fatalf("Failed to write invalid key: %v", err)
+	}
+	// Write a valid key as id_rsa so we still get at least one auth method
+	if err := os.WriteFile(filepath.Join(sshDir, "id_rsa"), []byte(testED25519Key), 0600); err != nil {
+		t.Fatalf("Failed to write valid key: %v", err)
+	}
+
+	t.Setenv("HOME", tmpHome)
+
+	client := &SFTPClient{config: &Config{}}
+	methods := client.loadDefaultKeys()
+
+	if len(methods) != 1 {
+		t.Errorf("Expected 1 AuthMethod (valid id_rsa only), got %d", len(methods))
+	}
+}
+
+func TestCreateHostKeyCallback_DefaultKnownHostsPath(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Don't set KnownHostsPath — let it default to $HOME/.ssh/known_hosts
+	client := &SFTPClient{
+		config: &Config{
+			IgnoreHostKey: false,
+		},
+	}
+
+	callback, err := client.createHostKeyCallback()
+	if err != nil {
+		t.Fatalf("createHostKeyCallback failed: %v", err)
+	}
+	if callback == nil {
+		t.Fatal("Expected non-nil callback")
+	}
+
+	// Verify .ssh/known_hosts was created
+	knownHostsPath := filepath.Join(tmpHome, ".ssh", "known_hosts")
+	if _, err := os.Stat(knownHostsPath); err != nil {
+		t.Errorf("Expected known_hosts to be created at default path: %v", err)
+	}
+}
+
+func TestExpandPath_HomeDirError(t *testing.T) {
+	// Set HOME to empty to force os.UserHomeDir to fail on some systems.
+	// expandPath should return the original path unchanged.
+	t.Setenv("HOME", "")
+
+	result := expandPath("~/something")
+	// If UserHomeDir fails, we get back the original; if it somehow succeeds
+	// with empty HOME, that's also acceptable behavior.
+	if result == "" {
+		t.Error("expandPath should not return empty string")
 	}
 }

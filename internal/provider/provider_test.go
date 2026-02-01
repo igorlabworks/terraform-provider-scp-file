@@ -976,8 +976,6 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 	if err := os.WriteFile(knownHostsPath, []byte(filteredOutput), 0600); err != nil {
 		t.Fatalf("Failed to write known_hosts file: %v", err)
 	}
-
-	t.Logf("Created test known_hosts file at %s for %s with %d keys", knownHostsPath, addr, len(lines))
 	return knownHostsPath
 }
 

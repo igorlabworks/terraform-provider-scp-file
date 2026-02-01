@@ -24,10 +24,37 @@ const (
 
 var defaultKeyNames = []string{"id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"}
 
+type sshCloser interface {
+	Close() error
+}
+
+type sftpOps interface {
+	Create(path string) (io.ReadWriteCloser, error)
+	Open(path string) (io.ReadCloser, error)
+	Stat(path string) (os.FileInfo, error)
+	Mkdir(path string) error
+	Chmod(path string, mode os.FileMode) error
+	Remove(path string) error
+	Close() error
+}
+
+// realSFTPOps wraps *sftp.Client to satisfy sftpOps.
+type realSFTPOps struct {
+	client *sftp.Client
+}
+
+func (r *realSFTPOps) Create(path string) (io.ReadWriteCloser, error) { return r.client.Create(path) }
+func (r *realSFTPOps) Open(path string) (io.ReadCloser, error)        { return r.client.Open(path) }
+func (r *realSFTPOps) Stat(path string) (os.FileInfo, error)          { return r.client.Stat(path) }
+func (r *realSFTPOps) Mkdir(path string) error                        { return r.client.Mkdir(path) }
+func (r *realSFTPOps) Chmod(path string, mode os.FileMode) error      { return r.client.Chmod(path, mode) }
+func (r *realSFTPOps) Remove(path string) error                       { return r.client.Remove(path) }
+func (r *realSFTPOps) Close() error                                   { return r.client.Close() }
+
 type SFTPClient struct {
 	config     *Config
-	sshClient  *ssh.Client
-	sftpClient *sftp.Client
+	sshClient  sshCloser
+	sftpClient sftpOps
 	agentConn  net.Conn
 }
 
@@ -136,7 +163,7 @@ func (c *SFTPClient) Connect() error {
 		return fmt.Errorf("failed to create SFTP client: %w", err)
 	}
 
-	c.sftpClient = sftpClient
+	c.sftpClient = &realSFTPOps{client: sftpClient}
 	return nil
 }
 
