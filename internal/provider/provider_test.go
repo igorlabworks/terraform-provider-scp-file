@@ -598,18 +598,7 @@ func TestScpProvider_Configure(t *testing.T) {
 	})
 
 	t.Run("TF_ACC mode sets retry behavior", func(t *testing.T) {
-		// Save and restore TF_ACC
-		oldVal := os.Getenv("TF_ACC")
-		defer func() {
-			if oldVal != "" {
-				os.Setenv("TF_ACC", oldVal)
-			} else {
-				os.Unsetenv("TF_ACC")
-			}
-		}()
-
-		// Set TF_ACC
-		os.Setenv("TF_ACC", "1")
+		t.Setenv("TF_ACC", "1")
 
 		p := &scpProvider{}
 
@@ -651,16 +640,7 @@ func TestScpProvider_Configure(t *testing.T) {
 	})
 
 	t.Run("non-TF_ACC mode uses default retry behavior", func(t *testing.T) {
-		// Ensure TF_ACC is not set
-		oldVal := os.Getenv("TF_ACC")
-		defer func() {
-			if oldVal != "" {
-				os.Setenv("TF_ACC", oldVal)
-			} else {
-				os.Unsetenv("TF_ACC")
-			}
-		}()
-		os.Unsetenv("TF_ACC")
+		t.Setenv("TF_ACC", "")
 
 		p := &scpProvider{}
 
