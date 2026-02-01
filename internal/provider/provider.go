@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
+	"github.com/igorlabworks/terraform-provider-scp/internal/localtypes"
 	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
 )
 
@@ -171,35 +172,6 @@ func (p *scpProvider) Schema(ctx context.Context, req provider.SchemaRequest, re
 	}
 }
 
-type Result[T any] interface {
-	getValue() T
-	getError() error
-}
-
-type Error[T any] struct {
-	err error
-}
-
-func (r *Error[T]) getValue() T {
-	panic(r.err.Error())
-}
-
-func (r *Error[T]) getError() error {
-	return r.err
-}
-
-type Value[T any] struct {
-	value T
-}
-
-func (r *Value[T]) getValue() T {
-	return r.value
-}
-
-func (r *Value[T]) getError() error {
-	return nil
-}
-
 type fileChecksums struct {
 	md5Hex       string
 	sha1Hex      string
@@ -240,83 +212,83 @@ func createRemoteClient(config *scpProviderConfig) (remote.Client, error) {
 	})
 }
 
-func withConnectedClient[T any](config *scpProviderConfig, fn func(remote.Client) Result[T]) Result[T] {
+func withConnectedClient[T any](config *scpProviderConfig, fn func(remote.Client) localtypes.Result[T]) localtypes.Result[T] {
 	client, err := createRemoteClient(config)
 	if err != nil {
-		return &Error[T]{err: err}
+		return &localtypes.Error[T]{Err: err}
 	}
 	defer client.Close()
 
 	if err := client.Connect(); err != nil {
-		return &Error[T]{err: err}
+		return &localtypes.Error[T]{Err: err}
 	}
 
 	return fn(client)
 }
 
 func writeRemoteFile(config *scpProviderConfig, remotePath string, content []byte, fileMode, dirMode os.FileMode) error {
-	result := withConnectedClient(config, func(c remote.Client) Result[struct{}] {
-		return &Error[struct{}]{err: c.WriteFile(remotePath, content, fileMode, dirMode)}
+	result := withConnectedClient(config, func(c remote.Client) localtypes.Result[struct{}] {
+		return &localtypes.Error[struct{}]{Err: c.WriteFile(remotePath, content, fileMode, dirMode)}
 	})
-	return result.getError()
+	return result.GetError()
 }
 
 func readRemoteFile(config *scpProviderConfig, remotePath string) ([]byte, error) {
-	result := withConnectedClient(config, func(c remote.Client) Result[[]byte] {
+	result := withConnectedClient(config, func(c remote.Client) localtypes.Result[[]byte] {
 		data, err := c.ReadFile(remotePath)
 		if err != nil {
-			return &Error[[]byte]{err: err}
+			return &localtypes.Error[[]byte]{Err: err}
 		}
-		return &Value[[]byte]{value: data}
+		return &localtypes.Value[[]byte]{Value: data}
 	})
-	if err := result.getError(); err != nil {
+	if err := result.GetError(); err != nil {
 		return nil, err
 	}
-	return result.getValue(), nil
+	return result.GetValue(), nil
 }
 
 func remoteFileExists(config *scpProviderConfig, remotePath string) (bool, error) {
-	result := withConnectedClient(config, func(c remote.Client) Result[bool] {
+	result := withConnectedClient(config, func(c remote.Client) localtypes.Result[bool] {
 		exists, err := c.FileExists(remotePath)
 		if err != nil {
-			return &Error[bool]{err: err}
+			return &localtypes.Error[bool]{Err: err}
 		}
-		return &Value[bool]{value: exists}
+		return &localtypes.Value[bool]{Value: exists}
 	})
-	if err := result.getError(); err != nil {
+	if err := result.GetError(); err != nil {
 		return false, err
 	}
-	return result.getValue(), nil
+	return result.GetValue(), nil
 }
 
 func getRemoteFileInfo(config *scpProviderConfig, remotePath string) (*remote.FileInfo, error) {
-	result := withConnectedClient(config, func(c remote.Client) Result[*remote.FileInfo] {
+	result := withConnectedClient(config, func(c remote.Client) localtypes.Result[*remote.FileInfo] {
 		info, err := c.GetFileInfo(remotePath)
 		if err != nil {
-			return &Error[*remote.FileInfo]{err: err}
+			return &localtypes.Error[*remote.FileInfo]{Err: err}
 		}
-		return &Value[*remote.FileInfo]{value: info}
+		return &localtypes.Value[*remote.FileInfo]{Value: info}
 	})
-	if err := result.getError(); err != nil {
+	if err := result.GetError(); err != nil {
 		return nil, err
 	}
-	return result.getValue(), nil
+	return result.GetValue(), nil
 }
 
 func deleteRemoteFile(config *scpProviderConfig, remotePath string) error {
-	result := withConnectedClient(config, func(c remote.Client) Result[*struct{}] {
-		return &Error[*struct{}]{err: c.DeleteFile(remotePath)}
+	result := withConnectedClient(config, func(c remote.Client) localtypes.Result[*struct{}] {
+		return &localtypes.Error[*struct{}]{Err: c.DeleteFile(remotePath)}
 	})
-	return result.getError()
+	return result.GetError()
 }
 
 // chmodRemoteFile changes the permissions of a remote file without modifying content.
 // Used in tests to simulate external permission modifications.
 func chmodRemoteFile(config *scpProviderConfig, remotePath string, mode os.FileMode) error {
-	result := withConnectedClient(config, func(c remote.Client) Result[*struct{}] {
-		return &Error[*struct{}]{err: c.Chmod(remotePath, mode)}
+	result := withConnectedClient(config, func(c remote.Client) localtypes.Result[*struct{}] {
+		return &localtypes.Error[*struct{}]{Err: c.Chmod(remotePath, mode)}
 	})
-	return result.getError()
+	return result.GetError()
 }
 
 func parseFilePermissions(permStr string) os.FileMode {

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -392,6 +394,35 @@ func TestParseFilePermissions(t *testing.T) {
 				t.Errorf("parseFilePermissions(%q) = %04o, want %04o", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestScpProvider_Metadata(t *testing.T) {
+	p := &scpProvider{version: "1.2.3"}
+	var resp provider.MetadataResponse
+	p.Metadata(context.Background(), provider.MetadataRequest{}, &resp)
+
+	if resp.TypeName != "scp" {
+		t.Errorf("TypeName = %q, want %q", resp.TypeName, "scp")
+	}
+	if resp.Version != "1.2.3" {
+		t.Errorf("Version = %q, want %q", resp.Version, "1.2.3")
+	}
+}
+
+func TestScpProvider_DataSources(t *testing.T) {
+	p := &scpProvider{}
+	ds := p.DataSources(context.Background())
+	if len(ds) != 0 {
+		t.Errorf("DataSources length = %d, want 0", len(ds))
+	}
+}
+
+func TestScpProvider_Resources(t *testing.T) {
+	p := &scpProvider{}
+	rs := p.Resources(context.Background())
+	if len(rs) != 2 {
+		t.Errorf("Resources length = %d, want 2", len(rs))
 	}
 }
 

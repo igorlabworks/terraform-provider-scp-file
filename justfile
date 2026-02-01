@@ -31,7 +31,7 @@ coverage-html *args="./...":
   go tool cover -html=coverage.out -o coverage.html
 
 coverage-lcov *args="./...":
-  gcov2lcov -in=coverage.out -out=coverage.lcov
+  gcov2lcov -infile coverage.out -outfile coverage.lcov
 
 test-host-up:
   docker run --rm -d \

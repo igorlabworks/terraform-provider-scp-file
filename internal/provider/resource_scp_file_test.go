@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,9 +10,508 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/defaults"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	r "github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
 )
+
+func scpFileSchema() schema.Schema {
+	res := NewSCPFileResource()
+	var schemaResp resource.SchemaResponse
+	res.Schema(context.Background(), resource.SchemaRequest{}, &schemaResp)
+	return schemaResp.Schema
+}
+
+// scpFileAttrTypes returns the tftypes.Object attribute types matching scpFileResourceModel.
+func scpFileAttrTypes() map[string]tftypes.Type {
+	return map[string]tftypes.Type{
+		"filename":             tftypes.String,
+		"content":              tftypes.String,
+		"content_base64":       tftypes.String,
+		"source":               tftypes.String,
+		"file_permission":      tftypes.String,
+		"directory_permission": tftypes.String,
+		"id":                   tftypes.String,
+		"content_md5":          tftypes.String,
+		"content_sha1":         tftypes.String,
+		"content_sha256":       tftypes.String,
+		"content_base64sha256": tftypes.String,
+		"content_sha512":       tftypes.String,
+		"content_base64sha512": tftypes.String,
+	}
+}
+
+func scpFilePlanValueWithDefaults(defaultPerm string, attrs map[string]tftypes.Value) tftypes.Value {
+	defaults := map[string]tftypes.Value{
+		"filename":             tftypes.NewValue(tftypes.String, ""),
+		"content":              tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"content_base64":       tftypes.NewValue(tftypes.String, nil),
+		"source":               tftypes.NewValue(tftypes.String, nil),
+		"file_permission":      tftypes.NewValue(tftypes.String, defaultPerm),
+		"directory_permission": tftypes.NewValue(tftypes.String, defaultPerm),
+		"id":                   tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"content_md5":          tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"content_sha1":         tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"content_sha256":       tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"content_base64sha256": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"content_sha512":       tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"content_base64sha512": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+	}
+	for k, v := range attrs {
+		defaults[k] = v
+	}
+	return tftypes.NewValue(tftypes.Object{AttributeTypes: scpFileAttrTypes()}, defaults)
+}
+
+func scpFilePlanValue(attrs map[string]tftypes.Value) tftypes.Value {
+	return scpFilePlanValueWithDefaults("0777", attrs)
+}
+
+func scpFileStateValue(attrs map[string]tftypes.Value) tftypes.Value {
+	defaults := map[string]tftypes.Value{
+		"filename":             tftypes.NewValue(tftypes.String, "/remote/file.txt"),
+		"content":              tftypes.NewValue(tftypes.String, "hello"),
+		"content_base64":       tftypes.NewValue(tftypes.String, nil),
+		"source":               tftypes.NewValue(tftypes.String, nil),
+		"file_permission":      tftypes.NewValue(tftypes.String, "0644"),
+		"directory_permission": tftypes.NewValue(tftypes.String, "0755"),
+		"id":                   tftypes.NewValue(tftypes.String, "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"),
+		"content_md5":          tftypes.NewValue(tftypes.String, "5d41402abc4b2a76b9719d911017c592"),
+		"content_sha1":         tftypes.NewValue(tftypes.String, "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"),
+		"content_sha256":       tftypes.NewValue(tftypes.String, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"),
+		"content_base64sha256": tftypes.NewValue(tftypes.String, "LPJNul+wowomboOyrFueKeGxYeXB+nJeZwQzNik4mYI="),
+		"content_sha512":       tftypes.NewValue(tftypes.String, "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043"),
+		"content_base64sha512": tftypes.NewValue(tftypes.String, "m3HSJL1i83eNltRq0+o9czGb+8KJDKrepd/3JRlnPKcjI8PZm6XBHXx6zG4Uuc1aBGY0dcLlw+re9G9z3EDAM="),
+	}
+	for k, v := range attrs {
+		defaults[k] = v
+	}
+	return tftypes.NewValue(tftypes.Object{AttributeTypes: scpFileAttrTypes()}, defaults)
+}
+
+func TestSCPFileResource_Metadata(t *testing.T) {
+	res := NewSCPFileResource()
+	var resp resource.MetadataResponse
+	res.Metadata(context.Background(), resource.MetadataRequest{ProviderTypeName: "scp"}, &resp)
+	if resp.TypeName != "scp_file" {
+		t.Errorf("TypeName = %q, want %q", resp.TypeName, "scp_file")
+	}
+}
+
+func TestSCPFileResource_Schema(t *testing.T) {
+	res := NewSCPFileResource()
+	var resp resource.SchemaResponse
+	res.Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	s := resp.Schema
+
+	// Required attributes
+	for _, name := range []string{"filename"} {
+		attr, ok := s.Attributes[name]
+		if !ok {
+			t.Fatalf("missing attribute %q", name)
+		}
+		if !attr.IsRequired() {
+			t.Errorf("attribute %q should be required", name)
+		}
+	}
+
+	// Optional content sources
+	for _, name := range []string{"content", "content_base64", "source"} {
+		attr, ok := s.Attributes[name]
+		if !ok {
+			t.Fatalf("missing attribute %q", name)
+		}
+		if !attr.IsOptional() {
+			t.Errorf("attribute %q should be optional", name)
+		}
+	}
+
+	// Permission defaults
+	for _, name := range []string{"file_permission", "directory_permission"} {
+		attr, ok := s.Attributes[name].(schema.StringAttribute)
+		if !ok {
+			t.Fatalf("attribute %q is not a StringAttribute", name)
+		}
+		var defResp defaults.StringResponse
+		attr.Default.DefaultString(context.Background(), defaults.StringRequest{}, &defResp)
+		if defResp.PlanValue.ValueString() != "0777" {
+			t.Errorf("%s default = %q, want %q", name, defResp.PlanValue.ValueString(), "0777")
+		}
+	}
+
+	// Computed checksum attributes
+	for _, name := range []string{"id", "content_md5", "content_sha1", "content_sha256", "content_base64sha256", "content_sha512", "content_base64sha512"} {
+		attr, ok := s.Attributes[name]
+		if !ok {
+			t.Fatalf("missing attribute %q", name)
+		}
+		if !attr.IsComputed() {
+			t.Errorf("attribute %q should be computed", name)
+		}
+	}
+}
+
+func TestSCPFileResource_Configure(t *testing.T) {
+	t.Run("nil provider data", func(t *testing.T) {
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		resp := &resource.ConfigureResponse{}
+		res.Configure(context.Background(), resource.ConfigureRequest{ProviderData: nil}, resp)
+		if resp.Diagnostics.HasError() {
+			t.Errorf("unexpected error diagnostics: %v", resp.Diagnostics)
+		}
+		if res.config != nil {
+			t.Error("expected config to remain nil")
+		}
+	})
+
+	t.Run("correct type", func(t *testing.T) {
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		cfg := &scpProviderConfig{Host: "example.com"}
+		resp := &resource.ConfigureResponse{}
+		res.Configure(context.Background(), resource.ConfigureRequest{ProviderData: cfg}, resp)
+		if resp.Diagnostics.HasError() {
+			t.Errorf("unexpected error diagnostics: %v", resp.Diagnostics)
+		}
+		if res.config != cfg {
+			t.Error("config was not assigned")
+		}
+	})
+
+	t.Run("wrong type", func(t *testing.T) {
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		resp := &resource.ConfigureResponse{}
+		res.Configure(context.Background(), resource.ConfigureRequest{ProviderData: "not a config"}, resp)
+		if !resp.Diagnostics.HasError() {
+			t.Fatal("expected error diagnostics for wrong type")
+		}
+		if !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "string") {
+			t.Errorf("error detail = %q, want mention of string type", resp.Diagnostics.Errors()[0].Detail())
+		}
+	})
+}
+
+func TestSCPFileResource_Create(t *testing.T) {
+	resSchema := scpFileSchema()
+
+	t.Run("success", func(t *testing.T) {
+		mock := &mockClient{}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		resp := &resource.CreateResponse{
+			State: tfsdk.State{
+				Schema: resSchema,
+				Raw:    tftypes.NewValue(tftypes.Object{AttributeTypes: scpFileAttrTypes()}, nil),
+			},
+		}
+		req := resource.CreateRequest{
+			Plan: tfsdk.Plan{
+				Schema: resSchema,
+				Raw: scpFilePlanValue(map[string]tftypes.Value{
+					"filename": tftypes.NewValue(tftypes.String, "/remote/file.txt"),
+					"content":  tftypes.NewValue(tftypes.String, "hello"),
+				}),
+			},
+		}
+
+		res.Create(context.Background(), req, resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("unexpected error: %v", resp.Diagnostics)
+		}
+		if len(mock.writeCalls) != 1 {
+			t.Fatalf("expected 1 write call, got %d", len(mock.writeCalls))
+		}
+		if mock.writeCalls[0].path != "/remote/file.txt" {
+			t.Errorf("write path = %q, want %q", mock.writeCalls[0].path, "/remote/file.txt")
+		}
+		if string(mock.writeCalls[0].content) != "hello" {
+			t.Errorf("write content = %q, want %q", mock.writeCalls[0].content, "hello")
+		}
+
+		var state scpFileResourceModel
+		resp.State.Get(context.Background(), &state)
+		checksums := genFileChecksums([]byte("hello"))
+		if state.ID.ValueString() != checksums.sha1Hex {
+			t.Errorf("id = %q, want %q", state.ID.ValueString(), checksums.sha1Hex)
+		}
+		if state.ContentMd5.ValueString() != checksums.md5Hex {
+			t.Errorf("content_md5 = %q, want %q", state.ContentMd5.ValueString(), checksums.md5Hex)
+		}
+	})
+
+	t.Run("invalid base64 content", func(t *testing.T) {
+		mock := &mockClient{}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		resp := &resource.CreateResponse{
+			State: tfsdk.State{
+				Schema: resSchema,
+				Raw:    tftypes.NewValue(tftypes.Object{AttributeTypes: scpFileAttrTypes()}, nil),
+			},
+		}
+		req := resource.CreateRequest{
+			Plan: tfsdk.Plan{
+				Schema: resSchema,
+				Raw: scpFilePlanValue(map[string]tftypes.Value{
+					"filename":       tftypes.NewValue(tftypes.String, "/remote/file.txt"),
+					"content":        tftypes.NewValue(tftypes.String, nil),
+					"content_base64": tftypes.NewValue(tftypes.String, "!!!invalid!!!"),
+				}),
+			},
+		}
+
+		res.Create(context.Background(), req, resp)
+
+		if !resp.Diagnostics.HasError() {
+			t.Fatal("expected error diagnostics for invalid base64")
+		}
+		if len(mock.writeCalls) != 0 {
+			t.Error("expected no write calls on content resolution failure")
+		}
+	})
+
+	t.Run("write error", func(t *testing.T) {
+		mock := &mockClient{writeErr: errors.New("disk full")}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		resp := &resource.CreateResponse{
+			State: tfsdk.State{
+				Schema: resSchema,
+				Raw:    tftypes.NewValue(tftypes.Object{AttributeTypes: scpFileAttrTypes()}, nil),
+			},
+		}
+		req := resource.CreateRequest{
+			Plan: tfsdk.Plan{
+				Schema: resSchema,
+				Raw: scpFilePlanValue(map[string]tftypes.Value{
+					"filename": tftypes.NewValue(tftypes.String, "/remote/file.txt"),
+					"content":  tftypes.NewValue(tftypes.String, "hello"),
+				}),
+			},
+		}
+
+		res.Create(context.Background(), req, resp)
+
+		if !resp.Diagnostics.HasError() {
+			t.Fatal("expected error diagnostics for write failure")
+		}
+		if !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "disk full") {
+			t.Errorf("error detail = %q, want mention of disk full", resp.Diagnostics.Errors()[0].Detail())
+		}
+	})
+}
+
+func TestSCPFileResource_Read(t *testing.T) {
+	resSchema := scpFileSchema()
+	checksums := genFileChecksums([]byte("hello"))
+
+	stateForRead := func(overrides map[string]tftypes.Value) tftypes.Value {
+		return scpFileStateValue(overrides)
+	}
+
+	t.Run("file exists matching checksum and permissions", func(t *testing.T) {
+		mock := &mockClient{
+			readResult: []byte("hello"),
+			fileInfo:   &remote.FileInfo{Mode: 0644, Size: 5},
+		}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		state := tfsdk.State{Schema: resSchema, Raw: stateForRead(nil)}
+		resp := &resource.ReadResponse{State: state}
+		req := resource.ReadRequest{State: state}
+
+		res.Read(context.Background(), req, resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("unexpected error: %v", resp.Diagnostics)
+		}
+		// State should NOT be removed — Raw should still be non-null
+		if resp.State.Raw.IsNull() {
+			t.Error("state was removed, expected it to be preserved")
+		}
+	})
+
+	t.Run("read error removes resource", func(t *testing.T) {
+		mock := &mockClient{readErr: errors.New("connection lost")}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		state := tfsdk.State{Schema: resSchema, Raw: stateForRead(nil)}
+		resp := &resource.ReadResponse{State: state}
+		req := resource.ReadRequest{State: state}
+
+		res.Read(context.Background(), req, resp)
+
+		if !resp.State.Raw.IsNull() {
+			t.Error("expected state to be removed after read error")
+		}
+	})
+
+	t.Run("checksum mismatch removes resource", func(t *testing.T) {
+		mock := &mockClient{
+			readResult: []byte("different content"),
+			fileInfo:   &remote.FileInfo{Mode: 0644, Size: 17},
+		}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		state := tfsdk.State{Schema: resSchema, Raw: stateForRead(map[string]tftypes.Value{
+			"id": tftypes.NewValue(tftypes.String, checksums.sha1Hex), // sha1 of "hello"
+		})}
+		resp := &resource.ReadResponse{State: state}
+		req := resource.ReadRequest{State: state}
+
+		res.Read(context.Background(), req, resp)
+
+		if !resp.State.Raw.IsNull() {
+			t.Error("expected state to be removed on checksum mismatch")
+		}
+	})
+
+	t.Run("permission mismatch removes resource", func(t *testing.T) {
+		mock := &mockClient{
+			readResult: []byte("hello"),
+			fileInfo:   &remote.FileInfo{Mode: 0755, Size: 5}, // 0755 != expected 0644
+		}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		state := tfsdk.State{Schema: resSchema, Raw: stateForRead(nil)}
+		resp := &resource.ReadResponse{State: state}
+		req := resource.ReadRequest{State: state}
+
+		res.Read(context.Background(), req, resp)
+
+		if !resp.State.Raw.IsNull() {
+			t.Error("expected state to be removed on permission mismatch")
+		}
+	})
+
+	t.Run("file info error removes resource", func(t *testing.T) {
+		mock := &mockClient{
+			readResult:  []byte("hello"),
+			fileInfoErr: errors.New("stat failed"),
+		}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		state := tfsdk.State{Schema: resSchema, Raw: stateForRead(nil)}
+		resp := &resource.ReadResponse{State: state}
+		req := resource.ReadRequest{State: state}
+
+		res.Read(context.Background(), req, resp)
+
+		if !resp.State.Raw.IsNull() {
+			t.Error("expected state to be removed on file info error")
+		}
+	})
+}
+
+func TestSCPFileResource_Delete(t *testing.T) {
+	resSchema := scpFileSchema()
+
+	t.Run("success", func(t *testing.T) {
+		mock := &mockClient{}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		state := tfsdk.State{
+			Schema: resSchema,
+			Raw:    scpFileStateValue(map[string]tftypes.Value{"filename": tftypes.NewValue(tftypes.String, "/remote/file.txt")}),
+		}
+		resp := &resource.DeleteResponse{}
+		req := resource.DeleteRequest{State: state}
+
+		res.Delete(context.Background(), req, resp)
+
+		if resp.Diagnostics.HasError() {
+			t.Fatalf("unexpected error: %v", resp.Diagnostics)
+		}
+		if len(mock.deleteCalls) != 1 || mock.deleteCalls[0] != "/remote/file.txt" {
+			t.Errorf("deleteCalls = %v, want [/remote/file.txt]", mock.deleteCalls)
+		}
+	})
+
+	t.Run("delete error", func(t *testing.T) {
+		mock := &mockClient{deleteErr: errors.New("permission denied")}
+		withMockClient(t, mock)
+
+		res, ok := NewSCPFileResource().(*scpFileResource)
+		if !ok {
+			t.Fatal("failed to cast to scpFileResource")
+		}
+		res.config = &scpProviderConfig{Host: "test"}
+		state := tfsdk.State{
+			Schema: resSchema,
+			Raw:    scpFileStateValue(map[string]tftypes.Value{"filename": tftypes.NewValue(tftypes.String, "/remote/file.txt")}),
+		}
+		resp := &resource.DeleteResponse{}
+		req := resource.DeleteRequest{State: state}
+
+		res.Delete(context.Background(), req, resp)
+
+		if !resp.Diagnostics.HasError() {
+			t.Fatal("expected error diagnostics for delete failure")
+		}
+		if !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "permission denied") {
+			t.Errorf("error detail = %q, want mention of permission denied", resp.Diagnostics.Errors()[0].Detail())
+		}
+	})
+}
 
 func TestSCPFile_Content(t *testing.T) {
 	if os.Getenv("TF_ACC") == "" {
