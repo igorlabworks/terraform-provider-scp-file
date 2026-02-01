@@ -105,6 +105,52 @@ func checkRemoteDirectoryHasPermissions(config *scpProviderConfig, remotePath st
 	}
 }
 
+func checkRemoteDirectoryExists(config *scpProviderConfig, dirPath string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		info, err := getRemoteFileInfo(config, dirPath)
+		if err != nil {
+			return fmt.Errorf("directory %s does not exist: %s", dirPath, err)
+		}
+		if !info.Mode.IsDir() {
+			return fmt.Errorf("path %s exists but is not a directory", dirPath)
+		}
+		return nil
+	}
+}
+
+func createRemoteDirectory(config *scpProviderConfig, dirPath string, mode os.FileMode) error {
+	client, err := createRemoteClient(config)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if err := client.Connect(); err != nil {
+		return err
+	}
+
+	return writeRemoteFile(config, filepath.Join(dirPath, ".keep"), []byte{}, 0644, mode)
+}
+
+func checkMultipleDirectoriesHavePermissions(config *scpProviderConfig, dirs []string, expectedPerm os.FileMode) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		for _, dir := range dirs {
+			info, err := getRemoteFileInfo(config, dir)
+			if err != nil {
+				return fmt.Errorf("error getting info for directory %s: %s", dir, err)
+			}
+			if !info.Mode.IsDir() {
+				return fmt.Errorf("path %s is not a directory", dir)
+			}
+			actualPerm := info.Mode.Perm()
+			if actualPerm != expectedPerm {
+				return fmt.Errorf("directory %s has permissions %04o, expected %04o", dir, actualPerm, expectedPerm)
+			}
+		}
+		return nil
+	}
+}
+
 func createLocalSourceFile(sourceFilePath, sourceContent string) error {
 	return os.WriteFile(sourceFilePath, []byte(sourceContent), 0644)
 }

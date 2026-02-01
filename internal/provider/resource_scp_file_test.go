@@ -600,6 +600,24 @@ func testAccSCPFileDecodedBase64ContentConfig(config *scpProviderConfig, content
 		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath)
 }
 
+func testAccSCPFileWithDirectoryPermissions(config *scpProviderConfig, content, filename, filePermission, directoryPermission string) string {
+	return fmt.Sprintf(`
+		provider "scp" {
+		  host             = %[1]q
+		  port             = %[2]d
+		  user             = %[3]q
+		  password         = %[4]q
+		  known_hosts_path = %[7]q
+		}
+
+		resource "scp_file" "test" {
+		  content              = %[5]q
+		  filename             = %[6]q
+		  file_permission      = %[8]q
+		  directory_permission = %[9]q
+		}`, config.Host, config.Port, config.User, config.Password, content, filename, config.KnownHostsPath, filePermission, directoryPermission)
+}
+
 func TestAccSCPFile_IgnoreHostKey(t *testing.T) {
 	if os.Getenv("TF_ACC") == "" {
 		t.Skip("Acceptance tests skipped unless TF_ACC is set")
@@ -698,6 +716,129 @@ func TestAccSCPFile_HostKeyNotFoundFailure(t *testing.T) {
 				ExpectError: regexp.MustCompile(`host key not found`),
 			},
 		},
+	})
+}
+
+func TestAccSCPFile_DeepDirectoryCreation(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/deep/nested/path/structure/file.txt")
+
+	// Define all directories that should be created
+	dirs := []string{
+		getTestRemotePath("test_upload/deep"),
+		getTestRemotePath("test_upload/deep/nested"),
+		getTestRemotePath("test_upload/deep/nested/path"),
+		getTestRemotePath("test_upload/deep/nested/path/structure"),
+	}
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: testAccSCPFileWithDirectoryPermissions(config, "test content", remotePath, "0644", "0755"),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					checkRemoteFileHasPermissions(config, remotePath, 0644),
+					checkMultipleDirectoriesHavePermissions(config, dirs, 0755),
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
+func TestAccSCPFile_DirectoryCreationWithDefaults(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/default_dir_test/subdir/file.txt")
+
+	// Define directories that should be created with default permissions
+	dirs := []string{
+		getTestRemotePath("test_upload/default_dir_test"),
+		getTestRemotePath("test_upload/default_dir_test/subdir"),
+	}
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: testAccSCPFileConfigNoPermissions(config, "test content", remotePath),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					checkMultipleDirectoriesHavePermissions(config, dirs, 0777),
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
+func TestAccSCPFile_ExistingDirectoryNotModified(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	preexistingDir := getTestRemotePath("test_upload/preexisting_dir")
+	remotePath := getTestRemotePath("test_upload/preexisting_dir/subdir/file.txt")
+	subdirPath := getTestRemotePath("test_upload/preexisting_dir/subdir")
+
+	// Create a pre-existing directory with specific permissions (0700)
+	if err := createRemoteDirectory(config, preexistingDir, 0700); err != nil {
+		t.Fatalf("Failed to create pre-existing directory: %v", err)
+	}
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: testAccSCPFileWithDirectoryPermissions(config, "test content", remotePath, "0644", "0755"),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					checkRemoteFileHasPermissions(config, remotePath, 0644),
+					// Pre-existing directory should still have 0700 (unchanged)
+					checkRemoteDirectoryExists(config, preexistingDir),
+					checkMultipleDirectoriesHavePermissions(config, []string{preexistingDir}, 0700),
+					// New subdirectory should have 0755 (as specified)
+					checkRemoteDirectoryExists(config, subdirPath),
+					checkMultipleDirectoriesHavePermissions(config, []string{subdirPath}, 0755),
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
+	})
+}
+
+func TestAccSCPFile_SingleLevelDirectory(t *testing.T) {
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless TF_ACC is set")
+	}
+
+	config := getTestSSHConfig(t)
+	remotePath := getTestRemotePath("test_upload/single_level_test/file.txt")
+	dirPath := getTestRemotePath("test_upload/single_level_test")
+
+	r.Test(t, r.TestCase{
+		ProtoV5ProviderFactories: protoV5ProviderFactories(),
+		Steps: []r.TestStep{
+			{
+				Config: testAccSCPFileWithDirectoryPermissions(config, "test content", remotePath, "0644", "0755"),
+				Check: r.ComposeTestCheckFunc(
+					checkRemoteFileExists(config, remotePath),
+					checkRemoteFileHasPermissions(config, remotePath, 0644),
+					checkRemoteDirectoryExists(config, dirPath),
+					checkMultipleDirectoriesHavePermissions(config, []string{dirPath}, 0755),
+				),
+			},
+		},
+		CheckDestroy: checkRemoteFileDeleted(config, remotePath),
 	})
 }
 
