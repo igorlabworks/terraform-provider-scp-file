@@ -514,11 +514,9 @@ func TestSCPFileResource_Delete(t *testing.T) {
 }
 
 func TestSCPFile_Content(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_file_content.txt")
 
 	r.Test(t, r.TestCase{
@@ -534,11 +532,9 @@ func TestSCPFile_Content(t *testing.T) {
 }
 
 func TestSCPFile_Base64Content(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_file_base64.txt")
 
 	r.Test(t, r.TestCase{
@@ -558,11 +554,9 @@ func TestSCPFile_Base64Content(t *testing.T) {
 }
 
 func TestSCPFile_Source(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 
 	// Create a temporary source file
 	sourceDirPath := t.TempDir()
@@ -587,11 +581,9 @@ func TestSCPFile_Source(t *testing.T) {
 }
 
 func TestSCPFile_Validator_NoContentSource(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_file_validators.txt")
 
 	r.Test(t, r.TestCase{
@@ -618,11 +610,9 @@ func TestSCPFile_Validator_NoContentSource(t *testing.T) {
 }
 
 func TestSCPFile_Validator_ConflictingContentSources(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_file_conflicting_sources.txt")
 
 	r.Test(t, r.TestCase{
@@ -651,12 +641,9 @@ func TestSCPFile_Validator_ConflictingContentSources(t *testing.T) {
 }
 
 func TestSCPFile_Permissions(t *testing.T) {
-	// Skip if not in acceptance test mode
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/permissions_test/test_file_permissions.txt")
 
 	r.Test(t, r.TestCase{
@@ -759,11 +746,9 @@ func TestSCPFile_Permissions(t *testing.T) {
 }
 
 func TestAccSCPFile_DefaultPermissions(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	// Use a unique path with directory to verify directory permission creation
 	remotePath := getTestRemotePath("test_upload/test_defaults/test_file_default_perms.txt")
 
@@ -790,12 +775,9 @@ func TestAccSCPFile_DefaultPermissions(t *testing.T) {
 }
 
 func TestSCPFile_DriftDetection(t *testing.T) {
-	// Skip if not in acceptance test mode
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_file_drift.txt")
 
 	r.Test(t, r.TestCase{
@@ -837,12 +819,9 @@ func TestSCPFile_DriftDetection(t *testing.T) {
 }
 
 func TestAccSCPFile_PermissionDriftDetection(t *testing.T) {
-	// Skip if not in acceptance test mode
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_file_perm_drift.txt")
 
 	r.Test(t, r.TestCase{
@@ -891,11 +870,9 @@ func TestAccSCPFile_PermissionDriftDetection(t *testing.T) {
 }
 
 func TestAccSCPFile_SSHConfigHostAlias(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/ssh_config_alias.txt")
 
 	// SSH config resolves Hostname, User, and Port from the alias.
@@ -930,11 +907,9 @@ func TestAccSCPFile_SSHConfigHostAlias(t *testing.T) {
 }
 
 func TestAccSCPFile_SSHConfigUserPort(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/ssh_config_user_port.txt")
 
 	// SSH config provides User via wildcard match; provider omits user.
@@ -968,11 +943,9 @@ func TestAccSCPFile_SSHConfigUserPort(t *testing.T) {
 }
 
 func TestAccSCPFile_CustomSSHConfigPath(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/ssh_config_custom_path.txt")
 
 	// SSH config in a non-default location provides the User directive.
@@ -1008,11 +981,9 @@ func TestAccSCPFile_CustomSSHConfigPath(t *testing.T) {
 }
 
 func TestAccSCPFile_ExplicitCustomPort(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 
 	// Verify we're testing with a non-default port (typically 2222 in CI)
 	if config.Port == 22 {
@@ -1153,9 +1124,7 @@ func testAccSCPFileWithDirectoryPermissions(config *scpProviderConfig, content, 
 }
 
 func TestAccSCPFile_IgnoreHostKey(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
 	// Build config manually without setupTestKnownHosts since we want empty known_hosts
 	host := os.Getenv("TEST_SSH_HOST")
@@ -1204,9 +1173,7 @@ func TestAccSCPFile_IgnoreHostKey(t *testing.T) {
 }
 
 func TestAccSCPFile_HostKeyNotFoundFailure(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
 	// Create a config with empty known_hosts and ignore_host_key = false (default)
 	host := os.Getenv("TEST_SSH_HOST")
@@ -1254,11 +1221,9 @@ func TestAccSCPFile_HostKeyNotFoundFailure(t *testing.T) {
 }
 
 func TestAccSCPFile_DeepDirectoryCreation(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/deep/nested/path/structure/file.txt")
 
 	// Define all directories that should be created
@@ -1286,11 +1251,9 @@ func TestAccSCPFile_DeepDirectoryCreation(t *testing.T) {
 }
 
 func TestAccSCPFile_DirectoryCreationWithDefaults(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/default_dir_test/subdir/file.txt")
 
 	// Define directories that should be created with default permissions
@@ -1315,11 +1278,9 @@ func TestAccSCPFile_DirectoryCreationWithDefaults(t *testing.T) {
 }
 
 func TestAccSCPFile_ExistingDirectoryNotModified(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	preexistingDir := getTestRemotePath("test_upload/preexisting_dir")
 	remotePath := getTestRemotePath("test_upload/preexisting_dir/subdir/file.txt")
 	subdirPath := getTestRemotePath("test_upload/preexisting_dir/subdir")
@@ -1351,11 +1312,9 @@ func TestAccSCPFile_ExistingDirectoryNotModified(t *testing.T) {
 }
 
 func TestAccSCPFile_SingleLevelDirectory(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/single_level_test/file.txt")
 	dirPath := getTestRemotePath("test_upload/single_level_test")
 

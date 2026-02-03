@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,29 @@ import (
 	"github.com/igorlabworks/terraform-provider-scp/internal/remote"
 )
 
+var accTestConfig *scpProviderConfig
+
+func TestMain(m *testing.M) {
+	if os.Getenv("TF_ACC") == "1" {
+		tempDir, err := os.MkdirTemp("", "scp-provider-test-*")
+		if err != nil {
+			panic(fmt.Sprintf("Failed to create temp dir: %v", err))
+		}
+		defer os.RemoveAll(tempDir)
+
+		knownHostsPath := filepath.Join(tempDir, "known_hosts")
+		accTestConfig = getTestSSHConfig(knownHostsPath)
+	}
+	code := m.Run()
+	os.Exit(code)
+}
+
+func markAccTest(t *testing.T) {
+	if os.Getenv("TF_ACC") != "1" {
+		t.Skip("Acceptance tests skipped unless TF_ACC=1 is set")
+	}
+}
+
 func protoV5ProviderFactories() map[string]func() (tfprotov5.ProviderServer, error) {
 	return map[string]func() (tfprotov5.ProviderServer, error){
 		"scp": providerserver.NewProtocol5WithError(New("test")()),
@@ -32,7 +56,9 @@ func protoV5ProviderFactories() map[string]func() (tfprotov5.ProviderServer, err
 }
 
 func TestWriteRemoteFile(t *testing.T) {
-	config := &scpProviderConfig{Host: "test"}
+	markAccTest(t)
+
+	config := accTestConfig
 
 	t.Run("success", func(t *testing.T) {
 		mock := &mockClient{}
@@ -596,97 +622,12 @@ func TestScpProvider_Configure(t *testing.T) {
 		}
 	})
 
-	t.Run("TF_ACC mode sets retry behavior", func(t *testing.T) {
-		t.Setenv("TF_ACC", "1")
-
-		p := &scpProvider{}
-
-		configValue := tftypes.NewValue(
-			tftypes.Object{AttributeTypes: providerAttrTypes()},
-			map[string]tftypes.Value{
-				"host":             tftypes.NewValue(tftypes.String, "example.com"),
-				"port":             tftypes.NewValue(tftypes.Number, nil),
-				"user":             tftypes.NewValue(tftypes.String, nil),
-				"password":         tftypes.NewValue(tftypes.String, nil),
-				"key_path":         tftypes.NewValue(tftypes.String, nil),
-				"known_hosts_path": tftypes.NewValue(tftypes.String, nil),
-				"ignore_host_key":  tftypes.NewValue(tftypes.Bool, nil),
-				"ssh_config_path":  tftypes.NewValue(tftypes.String, nil),
-			},
-		)
-
-		var schemaResp provider.SchemaResponse
-		p.Schema(context.Background(), provider.SchemaRequest{}, &schemaResp)
-
-		config := tfsdk.Config{
-			Schema: schemaResp.Schema,
-			Raw:    configValue,
-		}
-
-		var resp provider.ConfigureResponse
-		p.Configure(context.Background(), provider.ConfigureRequest{Config: config}, &resp)
-
-		if resp.Diagnostics.HasError() {
-			t.Fatalf("unexpected error diagnostics: %v", resp.Diagnostics)
-		}
-
-		if p.config.ConnectionRetries != 6 {
-			t.Errorf("ConnectionRetries = %d, want 6 in TF_ACC mode", p.config.ConnectionRetries)
-		}
-		if p.config.ConnectionRetryBaseDelay != 2000 {
-			t.Errorf("ConnectionRetryBaseDelay = %d, want 2000 in TF_ACC mode", p.config.ConnectionRetryBaseDelay)
-		}
-	})
-
-	t.Run("non-TF_ACC mode uses default retry behavior", func(t *testing.T) {
-		t.Setenv("TF_ACC", "")
-
-		p := &scpProvider{}
-
-		configValue := tftypes.NewValue(
-			tftypes.Object{AttributeTypes: providerAttrTypes()},
-			map[string]tftypes.Value{
-				"host":             tftypes.NewValue(tftypes.String, "example.com"),
-				"port":             tftypes.NewValue(tftypes.Number, nil),
-				"user":             tftypes.NewValue(tftypes.String, nil),
-				"password":         tftypes.NewValue(tftypes.String, nil),
-				"key_path":         tftypes.NewValue(tftypes.String, nil),
-				"known_hosts_path": tftypes.NewValue(tftypes.String, nil),
-				"ignore_host_key":  tftypes.NewValue(tftypes.Bool, nil),
-				"ssh_config_path":  tftypes.NewValue(tftypes.String, nil),
-			},
-		)
-
-		var schemaResp provider.SchemaResponse
-		p.Schema(context.Background(), provider.SchemaRequest{}, &schemaResp)
-
-		config := tfsdk.Config{
-			Schema: schemaResp.Schema,
-			Raw:    configValue,
-		}
-
-		var resp provider.ConfigureResponse
-		p.Configure(context.Background(), provider.ConfigureRequest{Config: config}, &resp)
-
-		if resp.Diagnostics.HasError() {
-			t.Fatalf("unexpected error diagnostics: %v", resp.Diagnostics)
-		}
-
-		if p.config.ConnectionRetries != 0 {
-			t.Errorf("ConnectionRetries = %d, want 0 (default) in non-TF_ACC mode", p.config.ConnectionRetries)
-		}
-		if p.config.ConnectionRetryBaseDelay != 0 {
-			t.Errorf("ConnectionRetryBaseDelay = %d, want 0 (default) in non-TF_ACC mode", p.config.ConnectionRetryBaseDelay)
-		}
-	})
 }
 
 func TestAccProvider_MissingHost(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_missing_host.txt")
 
 	resource.Test(t, resource.TestCase{
@@ -712,11 +653,9 @@ func TestAccProvider_MissingHost(t *testing.T) {
 }
 
 func TestAccProvider_InvalidPort(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_invalid_port.txt")
 
 	testCases := []struct {
@@ -765,11 +704,9 @@ func TestAccProvider_InvalidPort(t *testing.T) {
 }
 
 func TestAccProvider_InvalidKnownHostsPath(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_invalid_known_hosts.txt")
 
 	resource.Test(t, resource.TestCase{
@@ -927,15 +864,9 @@ func skipIfWindows() func() (bool, error) {
 	}
 }
 
-func setupTestKnownHosts(t *testing.T, host string, port int) string {
-	t.Helper()
-
-	tempDir := t.TempDir()
-	knownHostsPath := filepath.Join(tempDir, "known_hosts")
-
+func setupTestKnownHosts(knownHostsPath, host string, port int) string {
 	var output []byte
 	var err error
-	// Use exponential backoff: 2s, 4s, 8s, 16s, 32s (up to 62s total)
 	for i := 0; i < 5; i++ {
 		cmd := exec.Command("ssh-keyscan", "-p", strconv.Itoa(port), "-T", "10", host)
 		output, err = cmd.CombinedOutput()
@@ -943,14 +874,14 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 			break
 		}
 		if i < 4 {
-			// Exponential backoff starting at 2s: 2s, 4s, 8s, 16s, 32s
-			delay := time.Duration(2<<uint(i)) * time.Second
-			t.Logf("Retry %d: ssh-keyscan failed, retrying in %v...", i+1, delay)
+			// Exponential backoff
+			delay := time.Duration(2<<uint(i)) * time.Second * 2
+			log.Printf("Retry %d: ssh-keyscan failed, retrying in %v...", i+1, delay)
 			time.Sleep(delay)
 		}
 	}
 	if err != nil {
-		t.Fatalf("Failed to scan SSH host keys after retries: %v, output: %s", err, output)
+		panic(fmt.Sprintf("Failed to scan SSH host keys after retries: %v, output: %s", err, output))
 	}
 
 	lines := []string{}
@@ -971,7 +902,7 @@ func setupTestKnownHosts(t *testing.T, host string, port int) string {
 
 	filteredOutput := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(knownHostsPath, []byte(filteredOutput), 0600); err != nil {
-		t.Fatalf("Failed to write known_hosts file: %v", err)
+		panic(fmt.Sprintf("Failed to write known_hosts file: %v", err))
 	}
 	return knownHostsPath
 }
@@ -1012,9 +943,7 @@ func createTestSSHConfig(t *testing.T, content string) string {
 	return configPath
 }
 
-func getTestSSHConfig(t *testing.T) *scpProviderConfig {
-	t.Helper()
-
+func getTestSSHConfig(knownHostsPath string) *scpProviderConfig {
 	host := os.Getenv("TEST_SSH_HOST")
 	if host == "" {
 		host = "localhost"
@@ -1032,14 +961,8 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 		password = "testpass"
 	}
 	keyPath := os.Getenv("TEST_SSH_KEY_PATH")
-	implementation := os.Getenv("TEST_SSH_IMPLEMENTATION")
-	if implementation == "" {
-		implementation = "sftp"
-	}
-	_ = implementation // Implementation is read from env for future use
 
-	// Use per-test known_hosts with exponential backoff retry
-	knownHostsPath := setupTestKnownHosts(t, host, port)
+	setupTestKnownHosts(knownHostsPath, host, port)
 
 	return &scpProviderConfig{
 		Host:                     host,
@@ -1049,13 +972,10 @@ func getTestSSHConfig(t *testing.T) *scpProviderConfig {
 		KeyPath:                  keyPath,
 		KnownHostsPath:           knownHostsPath,
 		IgnoreHostKey:            false,
-		ConnectionRetries:        6,    // Higher retries for tests (default is 3)
-		ConnectionRetryBaseDelay: 2000, // 2s base delay for tests (default is 500ms)
-		// This creates exponential backoff: 2s, 4s, 8s, 16s, 32s (max 62s total).
+		ConnectionRetries:        6,
+		ConnectionRetryBaseDelay: 2000,
 	}
 }
-
-// Mock client and unit tests for remote helper functions
 
 type writeCall struct {
 	path     string

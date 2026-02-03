@@ -492,11 +492,9 @@ func TestSCPSensitiveFileResource_Delete(t *testing.T) {
 }
 
 func TestSCPSensitiveFile_Content(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_sensitive_file_content.txt")
 
 	r.Test(t, r.TestCase{
@@ -512,11 +510,9 @@ func TestSCPSensitiveFile_Content(t *testing.T) {
 }
 
 func TestSCPSensitiveFile_Base64Content(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_sensitive_file_base64.txt")
 
 	r.Test(t, r.TestCase{
@@ -536,11 +532,9 @@ func TestSCPSensitiveFile_Base64Content(t *testing.T) {
 }
 
 func TestSCPSensitiveFile_Source(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 
 	// Create a temporary source file
 	sourceDirPath := t.TempDir()
@@ -565,11 +559,9 @@ func TestSCPSensitiveFile_Source(t *testing.T) {
 }
 
 func TestSCPSensitiveFile_Validators(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_sensitive_file_validators.txt")
 
 	r.Test(t, r.TestCase{
@@ -613,12 +605,9 @@ func TestSCPSensitiveFile_Validators(t *testing.T) {
 }
 
 func TestSCPSensitiveFile_Permissions(t *testing.T) {
-	// Skip if not in acceptance test mode
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/permissions_test/test_sensitive_file_permissions.txt")
 
 	r.Test(t, r.TestCase{
@@ -670,11 +659,9 @@ func TestSCPSensitiveFile_Permissions(t *testing.T) {
 }
 
 func TestAccSCPSensitiveFile_DefaultPermissions(t *testing.T) {
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	// Use a unique path with directory to verify directory permission creation
 	remotePath := getTestRemotePath("test_upload/test_sensitive_defaults/test_sensitive_file_default_perms.txt")
 
@@ -701,12 +688,9 @@ func TestAccSCPSensitiveFile_DefaultPermissions(t *testing.T) {
 }
 
 func TestSCPSensitiveFile_DriftDetection(t *testing.T) {
-	// Skip if not in acceptance test mode
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_sensitive_file_drift.txt")
 
 	r.Test(t, r.TestCase{
@@ -748,12 +732,9 @@ func TestSCPSensitiveFile_DriftDetection(t *testing.T) {
 }
 
 func TestAccSCPSensitiveFile_PermissionDriftDetection(t *testing.T) {
-	// Skip if not in acceptance test mode
-	if os.Getenv("TF_ACC") == "" {
-		t.Skip("Acceptance tests skipped unless TF_ACC is set")
-	}
+	markAccTest(t)
 
-	config := getTestSSHConfig(t)
+	config := accTestConfig
 	remotePath := getTestRemotePath("test_upload/test_sensitive_perm_drift.txt")
 
 	r.Test(t, r.TestCase{

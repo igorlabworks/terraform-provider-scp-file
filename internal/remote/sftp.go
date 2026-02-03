@@ -28,7 +28,7 @@ type sshCloser interface {
 	Close() error
 }
 
-type sftpOps interface {
+type transferClient interface {
 	Create(path string) (io.ReadWriteCloser, error)
 	Open(path string) (io.ReadCloser, error)
 	Stat(path string) (os.FileInfo, error)
@@ -38,28 +38,32 @@ type sftpOps interface {
 	Close() error
 }
 
-// realSFTPOps wraps *sftp.Client to satisfy sftpOps.
-type realSFTPOps struct {
+// realTransferClient wraps *sftp.Client to satisfy transferClient.
+type realTransferClient struct {
 	client *sftp.Client
 }
 
-func (r *realSFTPOps) Create(path string) (io.ReadWriteCloser, error) { return r.client.Create(path) }
-func (r *realSFTPOps) Open(path string) (io.ReadCloser, error)        { return r.client.Open(path) }
-func (r *realSFTPOps) Stat(path string) (os.FileInfo, error)          { return r.client.Stat(path) }
-func (r *realSFTPOps) Mkdir(path string) error                        { return r.client.Mkdir(path) }
-func (r *realSFTPOps) Chmod(path string, mode os.FileMode) error      { return r.client.Chmod(path, mode) }
-func (r *realSFTPOps) Remove(path string) error                       { return r.client.Remove(path) }
-func (r *realSFTPOps) Close() error                                   { return r.client.Close() }
+func (r *realTransferClient) Create(path string) (io.ReadWriteCloser, error) {
+	return r.client.Create(path)
+}
+func (r *realTransferClient) Open(path string) (io.ReadCloser, error) { return r.client.Open(path) }
+func (r *realTransferClient) Stat(path string) (os.FileInfo, error)   { return r.client.Stat(path) }
+func (r *realTransferClient) Mkdir(path string) error                 { return r.client.Mkdir(path) }
+func (r *realTransferClient) Chmod(path string, mode os.FileMode) error {
+	return r.client.Chmod(path, mode)
+}
+func (r *realTransferClient) Remove(path string) error { return r.client.Remove(path) }
+func (r *realTransferClient) Close() error             { return r.client.Close() }
 
 type SFTPClient struct {
-	config     *Config
-	sshClient  sshCloser
-	sftpClient sftpOps
-	agentConn  net.Conn
+	config         *Config
+	sshClient      sshCloser
+	transferClient transferClient
+	agentConn      net.Conn
 }
 
 func NewSFTPClient(config *Config) (*SFTPClient, error) {
-	sshConfig, err := ParseSSHConfig(config.SSHConfigPath)
+	sshConfig, err := LoadSSHConfig(config.SSHConfigPath)
 	if err == nil {
 		sshConfig.ApplyToConfig(config.Host, config)
 	}
@@ -163,14 +167,14 @@ func (c *SFTPClient) Connect() error {
 		return fmt.Errorf("failed to create SFTP client: %w", err)
 	}
 
-	c.sftpClient = &realSFTPOps{client: sftpClient}
+	c.transferClient = &realTransferClient{client: sftpClient}
 	return nil
 }
 
 func (c *SFTPClient) Close() error {
-	if c.sftpClient != nil {
-		c.sftpClient.Close()
-		c.sftpClient = nil
+	if c.transferClient != nil {
+		c.transferClient.Close()
+		c.transferClient = nil
 	}
 	if c.agentConn != nil {
 		c.agentConn.Close()
@@ -189,7 +193,7 @@ func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.Fi
 		return fmt.Errorf("failed to create remote directory %s: %w", filepath.Dir(remotePath), err)
 	}
 
-	f, err := c.sftpClient.Create(remotePath)
+	f, err := c.transferClient.Create(remotePath)
 	if err != nil {
 		return fmt.Errorf("failed to create remote file %s: %w", remotePath, err)
 	}
@@ -199,7 +203,7 @@ func (c *SFTPClient) WriteFile(remotePath string, content []byte, fileMode os.Fi
 		return fmt.Errorf("failed to write to remote file %s: %w", remotePath, err)
 	}
 
-	if err := c.sftpClient.Chmod(remotePath, fileMode); err != nil {
+	if err := c.transferClient.Chmod(remotePath, fileMode); err != nil {
 		return fmt.Errorf("failed to set permissions on remote file %s: %w", remotePath, err)
 	}
 
@@ -217,14 +221,14 @@ func (c *SFTPClient) mkdirAllWithMode(remotePath string, mode os.FileMode) error
 
 	// Create each directory if it doesn't exist
 	for _, dir := range parts {
-		_, err := c.sftpClient.Stat(dir)
+		_, err := c.transferClient.Stat(dir)
 		if err != nil {
 			// Directory doesn't exist, create it
-			if err := c.sftpClient.Mkdir(dir); err != nil {
+			if err := c.transferClient.Mkdir(dir); err != nil {
 				return err
 			}
 			// Apply permissions
-			if err := c.sftpClient.Chmod(dir, mode); err != nil {
+			if err := c.transferClient.Chmod(dir, mode); err != nil {
 				return err
 			}
 		}
@@ -234,7 +238,7 @@ func (c *SFTPClient) mkdirAllWithMode(remotePath string, mode os.FileMode) error
 }
 
 func (c *SFTPClient) ReadFile(remotePath string) ([]byte, error) {
-	f, err := c.sftpClient.Open(remotePath)
+	f, err := c.transferClient.Open(remotePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open remote file %s: %w", remotePath, err)
 	}
@@ -249,12 +253,12 @@ func (c *SFTPClient) ReadFile(remotePath string) ([]byte, error) {
 }
 
 func (c *SFTPClient) FileExists(remotePath string) (bool, error) {
-	_, err := c.sftpClient.Stat(remotePath)
+	_, err := c.transferClient.Stat(remotePath)
 	return err == nil, nil
 }
 
 func (c *SFTPClient) GetFileInfo(remotePath string) (*FileInfo, error) {
-	info, err := c.sftpClient.Stat(remotePath)
+	info, err := c.transferClient.Stat(remotePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat remote file %s: %w", remotePath, err)
 	}
@@ -265,11 +269,11 @@ func (c *SFTPClient) GetFileInfo(remotePath string) (*FileInfo, error) {
 }
 
 func (c *SFTPClient) DeleteFile(remotePath string) error {
-	return c.sftpClient.Remove(remotePath)
+	return c.transferClient.Remove(remotePath)
 }
 
 func (c *SFTPClient) Chmod(remotePath string, mode os.FileMode) error {
-	return c.sftpClient.Chmod(remotePath, mode)
+	return c.transferClient.Chmod(remotePath, mode)
 }
 
 func (c *SFTPClient) loadDefaultKeys() []ssh.AuthMethod {

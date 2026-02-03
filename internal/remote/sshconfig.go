@@ -23,21 +23,10 @@ type SSHConfig struct {
 	globalDefaults  *SSHConfigEntry
 }
 
-func ParseSSHConfig(configPath string) (*SSHConfig, error) {
-	if configPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		configPath = filepath.Join(home, ".ssh", "config")
-	}
-
-	if strings.HasPrefix(configPath, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		configPath = filepath.Join(home, configPath[2:])
+func LoadSSHConfig(configPath string) (*SSHConfig, error) {
+	configPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return nil, err
 	}
 
 	file, err := os.Open(configPath)
@@ -45,7 +34,25 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 		return &SSHConfig{entries: make(map[string]*SSHConfigEntry)}, nil
 	}
 	defer file.Close()
+	return parseSSHConfig(file)
+}
 
+func resolveConfigPath(configPath string) (string, error) {
+	if configPath == "" {
+		configPath = "~/.ssh/config"
+	}
+
+	if strings.HasPrefix(configPath, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		configPath = filepath.Join(home, configPath[2:])
+	}
+	return configPath, nil
+}
+
+func parseSSHConfig(file *os.File) (*SSHConfig, error) {
 	config := &SSHConfig{
 		entries:        make(map[string]*SSHConfigEntry),
 		globalDefaults: &SSHConfigEntry{},
@@ -131,12 +138,10 @@ func ParseSSHConfig(configPath string) (*SSHConfig, error) {
 }
 
 func (c *SSHConfig) GetEntry(host string) *SSHConfigEntry {
-	// Check exact match first
 	if entry, ok := c.entries[host]; ok {
 		return entry
 	}
 
-	// Check patterns in file order (first match wins)
 	for _, pattern := range c.orderedPatterns {
 		if pattern != host && matchPattern(pattern, host) {
 			return c.entries[pattern]
@@ -175,12 +180,22 @@ func matchPattern(pattern, host string) bool {
 }
 
 func (c *SSHConfig) ApplyToConfig(host string, config *Config) {
-	originalHost := config.Host
+	originalConfig := &Config{
+		Host:    config.Host,
+		User:    config.User,
+		Port:    config.Port,
+		KeyPath: config.KeyPath,
+	}
+
+	c.applyGlobalDefaults(config)
+
+	c.applyEntryDefaults(host, config, originalConfig)
+}
+
+func (c *SSHConfig) applyGlobalDefaults(config *Config) {
 	originalUser := config.User
 	originalPort := config.Port
 	originalKeyPath := config.KeyPath
-
-	entry := c.GetEntry(host)
 
 	if c.globalDefaults != nil {
 		if originalUser == "" && c.globalDefaults.User != "" {
@@ -195,23 +210,26 @@ func (c *SSHConfig) ApplyToConfig(host string, config *Config) {
 			config.KeyPath = c.globalDefaults.IdentityFile
 		}
 	}
+}
+func (c *SSHConfig) applyEntryDefaults(host string, config *Config, originalConfig *Config) {
+	entry := c.GetEntry(host)
 
 	if entry != nil {
-		if originalHost == host && entry.Hostname != "" {
+		if originalConfig.Host == host && entry.Hostname != "" {
 			config.Host = entry.Hostname
 		}
 
-		if originalUser == "" && entry.User != "" {
+		if originalConfig.User == "" && entry.User != "" {
 			config.User = entry.User
 		}
 
-		if originalPort == 0 && entry.Port != "" {
+		if originalConfig.Port == 0 && entry.Port != "" {
 			if port, err := parsePort(entry.Port); err == nil && port > 0 {
 				config.Port = port
 			}
 		}
 
-		if originalKeyPath == "" && entry.IdentityFile != "" {
+		if originalConfig.KeyPath == "" && entry.IdentityFile != "" {
 			config.KeyPath = entry.IdentityFile
 		}
 	}

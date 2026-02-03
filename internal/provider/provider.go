@@ -88,11 +88,6 @@ func (p *scpProvider) Configure(ctx context.Context, req provider.ConfigureReque
 	// For acceptance tests, allow configuring retry behavior via environment variables
 	connectionRetries := 0        // 0 means use default (3)
 	connectionRetryBaseDelay := 0 // 0 means use default (500ms)
-	if os.Getenv("TF_ACC") != "" {
-		// In acceptance test mode, use more aggressive retry settings
-		connectionRetries = 6
-		connectionRetryBaseDelay = 2000 // 2s base delay
-	}
 
 	p.config = &scpProviderConfig{
 		Host:                     config.Host.ValueString(),
