@@ -40,16 +40,16 @@ jobs:
 
           echo "SSH server container started"
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version: "1.23"
           cache: false
 
       - name: Install Terraform/OpenTofu
-        uses: opentofu/setup-opentofu@v1
+        uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1.0.8
         with:
           tofu_version: latest
           tofu_wrapper: false
@@ -76,6 +76,15 @@ jobs:
           echo "SSH server failed to become ready"
           docker logs ssh-server
           exit 1
+
+      - name: Configure SSH server connection limits
+        run: |
+          echo "Configuring SSH server for higher connection limits..."
+          docker exec ssh-server sh -c 'echo "MaxStartups 100:30:200" >> /config/sshd/sshd_config'
+          docker exec ssh-server sh -c 'echo "MaxSessions 100" >> /config/sshd/sshd_config'
+          docker exec ssh-server pkill -HUP sshd || true
+          echo "SSH server reconfigured with higher connection limits"
+          sleep 2
 
       - name: Install sshpass for testing
         run: sudo apt-get update && sudo apt-get install -y sshpass

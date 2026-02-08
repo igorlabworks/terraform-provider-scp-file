@@ -1,0 +1,2180 @@
+package remote
+
+import (
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+)
+
+// testED25519Key is a throwaway ed25519 private key in OpenSSH format, used only in tests.
+const testED25519Key = `-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDuwIAWxbLVNx9Vu3MhstytlISPBAxdb83tJ0TOMVCf/QAAAKB5s06MebNO
+jAAAAAtzc2gtZWQyNTUxOQAAACDuwIAWxbLVNx9Vu3MhstytlISPBAxdb83tJ0TOMVCf/Q
+AAAEAVyOukUl4rwa/YynNf2uxI94OvgmQzNe8NdKgWxo0Gc+7AgBbFstU3H1W7cyGy3K2U
+hI8EDF1vze0nRM4xUJ/9AAAAHGlnb3JASWdvcnMtTWFjQm9vay1Qcm8ubG9jYWwB
+-----END OPENSSH PRIVATE KEY-----
+`
+
+// testED25519Key2 is a second throwaway ed25519 private key, used to test host key changes.
+const testED25519Key2 = `-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACC+QDZOmYDcALECdbeE+t/V3INo2Cvfp1LNhSKO4vatzAAAAJg8WH1CPFh9
+QgAAAAtzc2gtZWQyNTUxOQAAACC+QDZOmYDcALECdbeE+t/V3INo2Cvfp1LNhSKO4vatzA
+AAAEC5rcMnRdXG6GApIaXhxU7UBTufc6B5+nu7hbH3c7CZkL5ANk6ZgNwAsQJ1t4T639Xc
+g2jYK9+nUs2FIo7i9q3MAAAAEXRlc3QyQGV4YW1wbGUuY29tAQIDBA==
+-----END OPENSSH PRIVATE KEY-----
+`
+
+func homeEnvVarName() string {
+	env := "HOME"
+	switch runtime.GOOS {
+	case "windows":
+		env = "USERPROFILE"
+	case "plan9":
+		env = "home"
+	}
+	return env
+}
+
+func TestResolveConfigPath(t *testing.T) {
+	homeVarName := homeEnvVarName()
+
+	t.Run("AbsolutePath", func(t *testing.T) {
+		path, err := resolveConfigPath("/etc/ssh/ssh_config")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if path != "/etc/ssh/ssh_config" {
+			t.Errorf("Expected /etc/ssh/ssh_config, got %s", path)
+		}
+	})
+
+	t.Run("HomeExpansion", func(t *testing.T) {
+		t.Setenv(homeVarName, "/home/testuser")
+		path, err := resolveConfigPath("~/ssh/config")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "/home/testuser/ssh/config"
+		if path != expected {
+			t.Errorf("Expected %s, got %s", expected, path)
+		}
+	})
+	t.Run("DefaultPath", func(t *testing.T) {
+		t.Setenv(homeVarName, "/home/testuser")
+		path, err := resolveConfigPath("")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		expected := "/home/testuser/.ssh/config"
+		if path != expected {
+			t.Errorf("Expected %s, got %s", expected, path)
+		}
+	})
+	t.Run("NoHomeDirExpansion", func(t *testing.T) {
+		t.Setenv(homeVarName, "")
+		_, err := resolveConfigPath("~/ssh/config")
+		expected := fmt.Sprintf("$%s is not defined", homeVarName)
+		if err == nil || err.Error() != expected {
+			t.Fatalf("Expected error %s, got %v", expected, err)
+		}
+	})
+}
+
+func TestLoadSSHConfig(t *testing.T) {
+	t.Run("Valid", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `
+	# Test SSH config
+	Host example
+			Hostname example.com
+			User testuser
+			Port 2222
+			IdentityFile ~/.ssh/example_key
+
+	Host *.example.org
+			User wildcard_user
+			Port 22
+
+	Host *
+			User default_user
+	`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		config, err := LoadSSHConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadSSHConfig failed: %v", err)
+		}
+
+		// Test exact match
+		entry := config.GetEntry("example")
+		if entry == nil {
+			t.Fatal("Expected entry for 'example' but got nil")
+		}
+		if entry.Hostname != "example.com" {
+			t.Errorf("Expected Hostname 'example.com', got '%s'", entry.Hostname)
+		}
+		if entry.User != "testuser" {
+			t.Errorf("Expected User 'testuser', got '%s'", entry.User)
+		}
+		if entry.Port != "2222" {
+			t.Errorf("Expected Port '2222', got '%s'", entry.Port)
+		}
+
+		// Test wildcard match
+		entry = config.GetEntry("test.example.org")
+		if entry == nil {
+			t.Fatal("Expected entry for 'test.example.org' but got nil")
+		}
+		if entry.User != "wildcard_user" {
+			t.Errorf("Expected User 'wildcard_user', got '%s'", entry.User)
+		}
+
+		// Test global wildcard match
+		entry = config.GetEntry("unknown.host")
+		if entry == nil {
+			t.Fatal("Expected entry for 'unknown.host' but got nil")
+		}
+		if entry.User != "default_user" {
+			t.Errorf("Expected User 'default_user', got '%s'", entry.User)
+		}
+	})
+
+	t.Run("MissingFile", func(t *testing.T) {
+		config, err := LoadSSHConfig("/nonexistent/path/to/config")
+		if err != nil {
+			t.Fatalf("LoadSSHConfig should return empty config for missing file, got error: %v", err)
+		}
+		if config == nil {
+			t.Fatal("Expected non-nil config")
+		}
+
+		entry := config.GetEntry("anyhost")
+		if entry != nil {
+			t.Error("Expected nil entry for empty config")
+		}
+	})
+
+	t.Run("ResolvePathError", func(t *testing.T) {
+		homeVarName := homeEnvVarName()
+		t.Setenv(homeVarName, "")
+		_, err := LoadSSHConfig("~/nonexistent/path")
+		expected := fmt.Sprintf("$%s is not defined", homeVarName)
+		if err == nil || err.Error() != expected {
+			t.Fatalf("Expected error %s, got %v", expected, err)
+		}
+	})
+
+	t.Run("GlobalDefaults", func(t *testing.T) {
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `AddKeysToAgent yes
+UseKeychain yes
+IdentityFile ~/.ssh/id_ed25519
+
+Host hephaestus
+  HostName 192.168.1.100
+  User igor
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		sshConfig, err := LoadSSHConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadSSHConfig failed: %v", err)
+		}
+
+		if sshConfig.globalDefaults == nil {
+			t.Fatal("Expected globalDefaults to be set")
+		}
+
+		home, _ := os.UserHomeDir()
+		expectedKeyPath := filepath.Join(home, ".ssh", "id_ed25519")
+		if sshConfig.globalDefaults.IdentityFile != expectedKeyPath {
+			t.Errorf("Expected global IdentityFile '%s', got '%s'", expectedKeyPath, sshConfig.globalDefaults.IdentityFile)
+		}
+
+		entry := sshConfig.GetEntry("hephaestus")
+		if entry == nil {
+			t.Fatal("Expected entry for 'hephaestus' but got nil")
+		}
+		if entry.Hostname != "192.168.1.100" {
+			t.Errorf("Expected Hostname '192.168.1.100', got '%s'", entry.Hostname)
+		}
+		if entry.User != "igor" {
+			t.Errorf("Expected User 'igor', got '%s'", entry.User)
+		}
+
+		config := &Config{
+			Host: "hephaestus",
+		}
+
+		sshConfig.ApplyToConfig("hephaestus", config)
+
+		if config.Host != "192.168.1.100" {
+			t.Errorf("Expected Host '192.168.1.100', got '%s'", config.Host)
+		}
+
+		if config.User != "igor" {
+			t.Errorf("Expected User 'igor', got '%s'", config.User)
+		}
+
+		if config.KeyPath != expectedKeyPath {
+			t.Errorf("Expected KeyPath '%s', got '%s'", expectedKeyPath, config.KeyPath)
+		}
+	})
+
+	t.Run("MultipleHostPatterns", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `Host foo bar baz
+    User multiuser
+    Port 3333
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write SSH config: %v", err)
+		}
+
+		config, err := LoadSSHConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadSSHConfig failed: %v", err)
+		}
+
+		for _, host := range []string{"foo", "bar", "baz"} {
+			entry := config.GetEntry(host)
+			if entry == nil {
+				t.Fatalf("Expected entry for %q, got nil", host)
+			}
+			if entry.User != "multiuser" {
+				t.Errorf("Host %q: expected User 'multiuser', got '%s'", host, entry.User)
+			}
+			if entry.Port != "3333" {
+				t.Errorf("Host %q: expected Port '3333', got '%s'", host, entry.Port)
+			}
+		}
+	})
+
+	t.Run("QuotedValues", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `Host quoted
+    User "quoteduser"
+    IdentityFile "~/.ssh/my key"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write SSH config: %v", err)
+		}
+
+		config, err := LoadSSHConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadSSHConfig failed: %v", err)
+		}
+
+		entry := config.GetEntry("quoted")
+		if entry == nil {
+			t.Fatal("Expected entry for 'quoted', got nil")
+		}
+		if entry.User != "quoteduser" {
+			t.Errorf("Expected User 'quoteduser' (quotes stripped), got '%s'", entry.User)
+		}
+		// IdentityFile should have quotes stripped and tilde expanded
+		home, _ := os.UserHomeDir()
+		expectedKey := filepath.Join(home, ".ssh", "my key")
+		if entry.IdentityFile != expectedKey {
+			t.Errorf("Expected IdentityFile '%s', got '%s'", expectedKey, entry.IdentityFile)
+		}
+	})
+
+	t.Run("TildeExpansion", func(t *testing.T) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skip("Cannot get home directory")
+		}
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `Host tildehost
+    IdentityFile ~/.ssh/tilde_key
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write SSH config: %v", err)
+		}
+
+		config, err := LoadSSHConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadSSHConfig failed: %v", err)
+		}
+
+		entry := config.GetEntry("tildehost")
+		if entry == nil {
+			t.Fatal("Expected entry for 'tildehost', got nil")
+		}
+
+		expectedKey := filepath.Join(home, ".ssh", "tilde_key")
+		if entry.IdentityFile != expectedKey {
+			t.Errorf("Expected expanded path '%s', got '%s'", expectedKey, entry.IdentityFile)
+		}
+	})
+}
+
+func TestMatchPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		host    string
+		match   bool
+	}{
+		{"Wildcard", "*", "anything", true},
+		{"SubdomainMatch", "*.example.com", "test.example.com", true},
+		{"SubdomainNoMatch", "*.example.com", "example.com", false},
+		{"PrefixMatch", "test*", "testhost", true},
+		{"PrefixNoMatch", "test*", "host", false},
+		{"IPWildcardMatch", "192.168.1.*", "192.168.1.100", true},
+		{"IPWildcardNoMatch", "192.168.1.*", "192.168.2.100", false},
+		{"QuestionMarkMatch", "host?.example.com", "host1.example.com", true},
+		{"QuestionMarkNoMatch", "host?.example.com", "host12.example.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := matchPattern(tt.pattern, tt.host)
+			if result != tt.match {
+				t.Errorf("matchPattern(%q, %q) = %v, want %v", tt.pattern, tt.host, result, tt.match)
+			}
+		})
+	}
+}
+
+func TestApplyToConfig(t *testing.T) {
+	t.Run("Basic", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `
+Host myserver
+    Hostname actual.server.com
+    User sshuser
+    Port 2222
+    IdentityFile ~/.ssh/mykey
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		sshConfig, err := LoadSSHConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadSSHConfig failed: %v", err)
+		}
+
+		config := &Config{
+			Host: "myserver",
+			Port: 0,
+			User: "",
+		}
+
+		sshConfig.ApplyToConfig("myserver", config)
+
+		if config.Host != "actual.server.com" {
+			t.Errorf("Expected Host 'actual.server.com', got '%s'", config.Host)
+		}
+
+		if config.User != "sshuser" {
+			t.Errorf("Expected User 'sshuser', got '%s'", config.User)
+		}
+
+		if config.Port != 2222 {
+			t.Errorf("Expected Port 2222, got %d", config.Port)
+		}
+
+		config2 := &Config{
+			Host: "myserver",
+			Port: 22,       // Explicit port
+			User: "myuser", // Explicit user
+		}
+
+		sshConfig.ApplyToConfig("myserver", config2)
+
+		if config2.User != "myuser" {
+			t.Errorf("Expected User 'myuser' (explicit), got '%s'", config2.User)
+		}
+
+		if config2.Port != 22 {
+			t.Errorf("Expected Port 22 (explicit), got %d", config2.Port)
+		}
+	})
+	t.Run("GlobalDefaultsAndHostOverride", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `User globaluser
+IdentityFile ~/.ssh/global_key
+
+Host myserver
+    Hostname actual.server.com
+    User specificuser
+    IdentityFile ~/.ssh/specific_key
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		sshConfig, err := LoadSSHConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadSSHConfig failed: %v", err)
+		}
+
+		config := &Config{
+			Host: "myserver",
+		}
+		sshConfig.ApplyToConfig("myserver", config)
+
+		home, _ := os.UserHomeDir()
+		expectedKeyPath := filepath.Join(home, ".ssh", "specific_key")
+
+		if config.User != "specificuser" {
+			t.Errorf("Expected User 'specificuser' (host-specific), got '%s'", config.User)
+		}
+		if config.KeyPath != expectedKeyPath {
+			t.Errorf("Expected KeyPath '%s' (host-specific), got '%s'", expectedKeyPath, config.KeyPath)
+		}
+
+		config2 := &Config{
+			Host: "unknownhost",
+		}
+		sshConfig.ApplyToConfig("unknownhost", config2)
+
+		expectedGlobalKeyPath := filepath.Join(home, ".ssh", "global_key")
+		if config2.User != "globaluser" {
+			t.Errorf("Expected User 'globaluser' (global default), got '%s'", config2.User)
+		}
+		if config2.KeyPath != expectedGlobalKeyPath {
+			t.Errorf("Expected KeyPath '%s' (global default), got '%s'", expectedGlobalKeyPath, config2.KeyPath)
+		}
+	})
+}
+
+func TestExpandPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home directory")
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"TildeTest", "~/test", filepath.Join(home, "test")},
+		{"TildeSSH", "~/.ssh/id_rsa", filepath.Join(home, ".ssh", "id_rsa")},
+		{"AbsolutePath", "/absolute/path", "/absolute/path"},
+		{"RelativePath", "relative/path", "relative/path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := expandPath(tt.input)
+			if result != tt.expected {
+				t.Errorf("expandPath(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+
+	t.Run("HomeDirError", func(t *testing.T) {
+		// Set HOME to empty to force os.UserHomeDir to fail on some systems.
+		// expandPath should return the original path unchanged.
+		t.Setenv(homeEnvVarName(), "")
+
+		result := expandPath("~/something")
+		// If UserHomeDir fails, we get back the original; if it somehow succeeds
+		// with empty HOME, that's also acceptable behavior.
+		if result == "" {
+			t.Error("expandPath should not return empty string")
+		}
+	})
+}
+
+func TestNewClient(t *testing.T) {
+	t.Run("DefaultImplementation", func(t *testing.T) {
+		config := &Config{
+			Host:          "localhost",
+			Port:          22,
+			User:          "testuser",
+			IgnoreHostKey: true,
+		}
+
+		client, err := NewClient(config)
+		if err != nil {
+			t.Fatalf("NewClient failed: %v", err)
+		}
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+
+		_, ok := client.(*SFTPClient)
+		if !ok {
+			t.Error("Expected *SFTPClient for default implementation")
+		}
+	})
+
+	t.Run("ExplicitSFTP", func(t *testing.T) {
+		config := &Config{
+			Host:          "localhost",
+			Port:          22,
+			User:          "testuser",
+			IgnoreHostKey: true,
+		}
+
+		client, err := NewClient(config)
+		if err != nil {
+			t.Fatalf("NewClient (sftp) failed: %v", err)
+		}
+		if client == nil {
+			t.Fatal("Expected non-nil client")
+		}
+
+		_, ok := client.(*SFTPClient)
+		if !ok {
+			t.Error("Expected *SFTPClient for 'sftp' implementation")
+		}
+	})
+}
+
+func TestHostKeyError(t *testing.T) {
+	t.Run("ErrorMessage", func(t *testing.T) {
+		err := &HostKeyError{
+			Host:           "example.com",
+			KeyType:        "ssh-ed25519",
+			KeyFingerprint: "SHA256:...",
+			KnownHostsLine: "example.com ssh-ed25519 AAAA...",
+			Err:            os.ErrNotExist,
+		}
+
+		if err.Error() != os.ErrNotExist.Error() {
+			t.Errorf("Expected error message '%s', got '%s'", os.ErrNotExist.Error(), err.Error())
+		}
+	})
+
+	t.Run("Unwrap", func(t *testing.T) {
+		err := &HostKeyError{
+			Host:           "example.com",
+			KeyType:        "ssh-ed25519",
+			KeyFingerprint: "SHA256:...",
+			KnownHostsLine: "example.com ssh-ed25519 AAAA...",
+			Err:            os.ErrNotExist,
+		}
+
+		if err.Unwrap() != os.ErrNotExist {
+			t.Error("Unwrap should return the wrapped error")
+		}
+	})
+}
+
+func TestLoadSSHAgent(t *testing.T) {
+	t.Run("Basic", func(t *testing.T) {
+		// Start a unix socket listener to simulate an SSH agent socket
+		tmpDir := t.TempDir()
+		sockPath := filepath.Join(tmpDir, "agent.sock")
+
+		listener, err := net.Listen("unix", sockPath)
+		if err != nil {
+			t.Fatalf("Failed to create unix listener: %v", err)
+		}
+		defer listener.Close()
+
+		t.Setenv("SSH_AUTH_SOCK", sockPath)
+
+		client := &SFTPClient{config: &Config{}}
+		auth := client.loadSSHAgent()
+
+		if auth == nil {
+			t.Fatal("Expected non-nil AuthMethod when SSH_AUTH_SOCK points to a valid socket")
+		}
+		if client.agentConn == nil {
+			t.Fatal("Expected agentConn to be set after successful agent connection")
+		}
+		client.agentConn.Close()
+	})
+	t.Run("Missing", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "")
+
+		client := &SFTPClient{config: &Config{}}
+		auth := client.loadSSHAgent()
+
+		if auth != nil {
+			t.Error("Expected nil AuthMethod when SSH_AUTH_SOCK is unset")
+		}
+		if client.agentConn != nil {
+			t.Error("Expected agentConn to remain nil when SSH_AUTH_SOCK is unset")
+		}
+	})
+	t.Run("Unreachable", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "/nonexistent/path/agent.sock")
+
+		client := &SFTPClient{config: &Config{}}
+		auth := client.loadSSHAgent()
+
+		if auth != nil {
+			t.Error("Expected nil AuthMethod when SSH_AUTH_SOCK points to unreachable socket")
+		}
+		if client.agentConn != nil {
+			t.Error("Expected agentConn to remain nil when dial fails")
+		}
+	})
+}
+
+func TestLoadDefaultKeys(t *testing.T) {
+	t.Run("Basic", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		sshDir := filepath.Join(tmpHome, ".ssh")
+		if err := os.MkdirAll(sshDir, 0700); err != nil {
+			t.Fatalf("Failed to create .ssh dir: %v", err)
+		}
+
+		// Write a valid ed25519 key as id_ed25519
+		if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte(testED25519Key), 0600); err != nil {
+			t.Fatalf("Failed to write test key: %v", err)
+		}
+
+		t.Setenv(homeEnvVarName(), tmpHome)
+
+		client := &SFTPClient{config: &Config{}}
+		methods := client.loadDefaultKeys()
+
+		if len(methods) == 0 {
+			t.Fatal("Expected at least one AuthMethod from default keys when id_ed25519 exists")
+		}
+	})
+	t.Run("Empty", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		// .ssh exists but contains no recognized key files
+		if err := os.MkdirAll(filepath.Join(tmpHome, ".ssh"), 0700); err != nil {
+			t.Fatalf("Failed to create .ssh dir: %v", err)
+		}
+
+		t.Setenv(homeEnvVarName(), tmpHome)
+
+		client := &SFTPClient{config: &Config{}}
+		methods := client.loadDefaultKeys()
+
+		if len(methods) != 0 {
+			t.Errorf("Expected zero AuthMethods when no default keys exist, got %d", len(methods))
+		}
+	})
+
+	t.Run("SkipsInvalidKey", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		sshDir := filepath.Join(tmpHome, ".ssh")
+		if err := os.MkdirAll(sshDir, 0700); err != nil {
+			t.Fatalf("Failed to create .ssh dir: %v", err)
+		}
+
+		// Write an invalid (non-parseable) key file as id_ed25519
+		if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte("not a valid key"), 0600); err != nil {
+			t.Fatalf("Failed to write invalid key: %v", err)
+		}
+		// Write a valid key as id_rsa so we still get at least one auth method
+		if err := os.WriteFile(filepath.Join(sshDir, "id_rsa"), []byte(testED25519Key), 0600); err != nil {
+			t.Fatalf("Failed to write valid key: %v", err)
+		}
+
+		t.Setenv(homeEnvVarName(), tmpHome)
+
+		client := &SFTPClient{config: &Config{}}
+		methods := client.loadDefaultKeys()
+
+		if len(methods) != 1 {
+			t.Errorf("Expected 1 AuthMethod (valid id_rsa only), got %d", len(methods))
+		}
+	})
+}
+
+func TestKeyPathAuth(t *testing.T) {
+	t.Run("ValidKey", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		keyPath := filepath.Join(tmpDir, "mykey")
+		if err := os.WriteFile(keyPath, []byte(testED25519Key), 0600); err != nil {
+			t.Fatalf("Failed to write test key: %v", err)
+		}
+
+		// Verify the key parses correctly (this is what Connect uses internally)
+		key, err := os.ReadFile(keyPath)
+		if err != nil {
+			t.Fatalf("Failed to read key file: %v", err)
+		}
+		_, err = ssh.ParsePrivateKey(key)
+		if err != nil {
+			t.Fatalf("Test key failed to parse: %v", err)
+		}
+
+		// Connect will fail at ssh.Dial, but we verify it gets past auth assembly
+		// by checking the error is a connection error, not an auth-assembly error
+		client := &SFTPClient{config: &Config{
+			Host:          "localhost",
+			Port:          1, // Deliberately invalid port to fail fast at dial
+			User:          "testuser",
+			KeyPath:       keyPath,
+			IgnoreHostKey: true,
+
+			ConnectionRetries:        1,
+			ConnectionRetryBaseDelay: 1,
+		}}
+
+		err = client.Connect()
+		if err == nil {
+			t.Fatal("Expected connection error on invalid port")
+		}
+		// Should fail at dial, not at "no SSH authentication methods available"
+		if err.Error() == "no SSH authentication methods available" {
+			t.Error("KeyPath auth was not assembled; got 'no auth methods' error")
+		}
+	})
+
+	t.Run("MissingKey", func(t *testing.T) {
+		// KeyPath points to nonexistent file; Connect should fall through to other methods
+		// With no other methods available, we expect "no SSH authentication methods available"
+		tmpHome := t.TempDir()
+		// Empty .ssh so loadDefaultKeys returns nothing
+		if err := os.MkdirAll(filepath.Join(tmpHome, ".ssh"), 0700); err != nil {
+			t.Fatalf("Failed to create .ssh dir: %v", err)
+		}
+		t.Setenv(homeEnvVarName(), tmpHome)
+		t.Setenv("SSH_AUTH_SOCK", "")
+
+		client := &SFTPClient{config: &Config{
+			Host:    "localhost",
+			User:    "testuser",
+			KeyPath: "/nonexistent/path/to/key",
+		}}
+
+		err := client.Connect()
+		if err == nil {
+			t.Fatal("Expected error when no auth methods are available")
+		}
+		if err.Error() != "no SSH authentication methods available" {
+			t.Errorf("Expected 'no SSH authentication methods available', got: %v", err)
+		}
+	})
+}
+
+func TestAuthMethodPrecedence(t *testing.T) {
+	t.Run("All", func(t *testing.T) {
+		// Verify: password is always added; agent added when socket exists;
+		// keypath added when file is valid; default keys only loaded when nothing else is available.
+		tmpDir := t.TempDir()
+		tmpHome := t.TempDir()
+		sshDir := filepath.Join(tmpHome, ".ssh")
+		if err := os.MkdirAll(sshDir, 0700); err != nil {
+			t.Fatalf("Failed to create .ssh dir: %v", err)
+		}
+
+		// Place a default key so loadDefaultKeys would find it
+		if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte(testED25519Key), 0600); err != nil {
+			t.Fatalf("Failed to write default key: %v", err)
+		}
+
+		// Place an explicit key at keyPath
+		keyPath := filepath.Join(tmpDir, "explicit_key")
+		if err := os.WriteFile(keyPath, []byte(testED25519Key), 0600); err != nil {
+			t.Fatalf("Failed to write explicit key: %v", err)
+		}
+
+		// Set up a fake agent socket
+		sockPath := filepath.Join(tmpDir, "agent.sock")
+		listener, err := net.Listen("unix", sockPath)
+		if err != nil {
+			t.Fatalf("Failed to create unix listener: %v", err)
+		}
+		defer listener.Close()
+
+		t.Setenv(homeEnvVarName(), tmpHome)
+		t.Setenv("SSH_AUTH_SOCK", sockPath)
+
+		// With password + agent + keypath all available, Connect should attempt the connection
+		// (fail at dial, but NOT fail at auth assembly). Default keys should NOT be consulted
+		// because other methods are present.
+		client := &SFTPClient{config: &Config{
+			Host:          "localhost",
+			Port:          1,
+			User:          "testuser",
+			Password:      "secret",
+			KeyPath:       keyPath,
+			IgnoreHostKey: true,
+
+			ConnectionRetries:        1,
+			ConnectionRetryBaseDelay: 1,
+		}}
+
+		err = client.Connect()
+		if err == nil {
+			t.Fatal("Expected connection error on invalid port")
+		}
+		if err.Error() == "no SSH authentication methods available" {
+			t.Error("Auth assembly failed despite password, agent, and keypath being available")
+		}
+	})
+
+	t.Run("Fallback", func(t *testing.T) {
+		// Now verify default keys ARE used when nothing else is available
+		tmpHome := t.TempDir()
+		sshDir := filepath.Join(tmpHome, ".ssh")
+		if err := os.MkdirAll(sshDir, 0700); err != nil {
+			t.Fatalf("Failed to create .ssh dir: %v", err)
+		}
+
+		// Place a default key so loadDefaultKeys would find it
+		if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte(testED25519Key), 0600); err != nil {
+			t.Fatalf("Failed to write default key: %v", err)
+		}
+
+		t.Setenv(homeEnvVarName(), tmpHome)
+		t.Setenv("SSH_AUTH_SOCK", "")
+
+		client2 := &SFTPClient{config: &Config{
+			Host:          "localhost",
+			Port:          1,
+			User:          "testuser",
+			IgnoreHostKey: true,
+
+			ConnectionRetries:        1,
+			ConnectionRetryBaseDelay: 1,
+		}}
+
+		err := client2.Connect()
+		if err == nil {
+			t.Fatal("Expected connection error on invalid port")
+		}
+		if err.Error() == "no SSH authentication methods available" {
+			t.Error("Default keys should have been loaded as fallback, but no auth methods were found")
+		}
+	})
+}
+
+func TestHostKeyCallback(t *testing.T) {
+	t.Run("IgnoreHostKey", func(t *testing.T) {
+		client := &SFTPClient{
+			config: &Config{
+				IgnoreHostKey: true,
+			},
+		}
+
+		callback, err := client.createHostKeyCallback()
+		if err != nil {
+			t.Fatalf("createHostKeyCallback failed: %v", err)
+		}
+
+		// Parse a test key
+		signer, err := ssh.ParsePrivateKey([]byte(testED25519Key))
+		if err != nil {
+			t.Fatalf("Failed to parse test key: %v", err)
+		}
+
+		// The callback should accept any host/key combination without error
+		err = callback("example.com:22", &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}, signer.PublicKey())
+		if err != nil {
+			t.Errorf("Expected no error with IgnoreHostKey=true, got: %v", err)
+		}
+
+		// Try another host/key combination
+		signer2, err := ssh.ParsePrivateKey([]byte(testED25519Key2))
+		if err != nil {
+			t.Fatalf("Failed to parse second test key: %v", err)
+		}
+
+		err = callback("different.com:2222", &net.TCPAddr{IP: net.ParseIP("192.0.2.2"), Port: 2222}, signer2.PublicKey())
+		if err != nil {
+			t.Errorf("Expected no error with IgnoreHostKey=true, got: %v", err)
+		}
+	})
+
+	t.Run("CreateSSHDirectoryIfMissing", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		knownHostsPath := filepath.Join(tmpHome, ".ssh", "known_hosts")
+
+		client := &SFTPClient{
+			config: &Config{
+				KnownHostsPath: knownHostsPath,
+				IgnoreHostKey:  false,
+			},
+		}
+
+		// .ssh directory shouldn't exist yet
+		sshDir := filepath.Join(tmpHome, ".ssh")
+		if _, err := os.Stat(sshDir); !os.IsNotExist(err) {
+			t.Fatal(".ssh directory should not exist yet")
+		}
+
+		_, err := client.createHostKeyCallback()
+		if err != nil {
+			t.Fatalf("createHostKeyCallback failed: %v", err)
+		}
+
+		// Verify .ssh directory was created with correct permissions
+		info, err := os.Stat(sshDir)
+		if err != nil {
+			t.Fatalf("Failed to stat .ssh directory: %v", err)
+		}
+		if !info.IsDir() {
+			t.Error(".ssh should be a directory")
+		}
+		if info.Mode().Perm() != 0700 {
+			t.Errorf("Expected .ssh permissions 0700, got %04o", info.Mode().Perm())
+		}
+
+		// Verify known_hosts file was created with correct permissions
+		info, err = os.Stat(knownHostsPath)
+		if err != nil {
+			t.Fatalf("Failed to stat known_hosts file: %v", err)
+		}
+		if info.Mode().Perm() != 0600 {
+			t.Errorf("Expected known_hosts permissions 0600, got %04o", info.Mode().Perm())
+		}
+	})
+
+	t.Run("HostKeyNotFoundError", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		knownHostsPath := filepath.Join(tmpDir, "known_hosts")
+
+		// Create empty known_hosts file
+		if err := os.WriteFile(knownHostsPath, []byte{}, 0600); err != nil {
+			t.Fatalf("Failed to create empty known_hosts: %v", err)
+		}
+
+		client := &SFTPClient{
+			config: &Config{
+				KnownHostsPath: knownHostsPath,
+				IgnoreHostKey:  false,
+			},
+		}
+
+		callback, err := client.createHostKeyCallback()
+		if err != nil {
+			t.Fatalf("createHostKeyCallback failed: %v", err)
+		}
+
+		// Parse a test key
+		signer, err := ssh.ParsePrivateKey([]byte(testED25519Key))
+		if err != nil {
+			t.Fatalf("Failed to parse test key: %v", err)
+		}
+
+		// Call the callback with a host not in known_hosts
+		hostname := "unknown.example.com:22"
+		err = callback(hostname, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}, signer.PublicKey())
+
+		// Should return a HostKeyError
+		if err == nil {
+			t.Fatal("Expected error for unknown host key, got nil")
+		}
+
+		hostKeyErr, ok := err.(*HostKeyError)
+		if !ok {
+			t.Fatalf("Expected *HostKeyError, got %T", err)
+		}
+
+		// Verify error contents
+		if hostKeyErr.Host != hostname {
+			t.Errorf("Expected Host '%s', got '%s'", hostname, hostKeyErr.Host)
+		}
+		if hostKeyErr.KeyType != "ssh-ed25519" {
+			t.Errorf("Expected KeyType 'ssh-ed25519', got '%s'", hostKeyErr.KeyType)
+		}
+		if hostKeyErr.KeyFingerprint == "" {
+			t.Error("KeyFingerprint should not be empty")
+		}
+		if hostKeyErr.KnownHostsLine == "" {
+			t.Error("KnownHostsLine should not be empty")
+		}
+
+		// Check error message content
+		errMsg := hostKeyErr.Error()
+		if !strings.Contains(errMsg, "host key not found") {
+			t.Errorf("Error message should contain 'host key not found', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, hostKeyErr.KeyType) {
+			t.Errorf("Error message should contain key type, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, hostKeyErr.KeyFingerprint) {
+			t.Errorf("Error message should contain key fingerprint, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, knownHostsPath) {
+			t.Errorf("Error message should contain known_hosts path, got: %s", errMsg)
+		}
+	})
+
+	t.Run("HostKeyChangedError", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		knownHostsPath := filepath.Join(tmpDir, "known_hosts")
+
+		// Parse first test key
+		signer1, err := ssh.ParsePrivateKey([]byte(testED25519Key))
+		if err != nil {
+			t.Fatalf("Failed to parse first test key: %v", err)
+		}
+
+		// Create known_hosts with the first key
+		hostname := "example.com"
+		knownHostsLine := ssh.MarshalAuthorizedKey(signer1.PublicKey())
+		knownHostsContent := fmt.Sprintf("%s %s", hostname, string(knownHostsLine))
+		if err := os.WriteFile(knownHostsPath, []byte(knownHostsContent), 0600); err != nil {
+			t.Fatalf("Failed to write known_hosts: %v", err)
+		}
+
+		client := &SFTPClient{
+			config: &Config{
+				KnownHostsPath: knownHostsPath,
+				IgnoreHostKey:  false,
+			},
+		}
+
+		callback, err := client.createHostKeyCallback()
+		if err != nil {
+			t.Fatalf("createHostKeyCallback failed: %v", err)
+		}
+
+		// Parse second test key (different from the one in known_hosts)
+		signer2, err := ssh.ParsePrivateKey([]byte(testED25519Key2))
+		if err != nil {
+			t.Fatalf("Failed to parse second test key: %v", err)
+		}
+
+		// Call the callback with the same host but different key
+		err = callback(hostname+":22", &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}, signer2.PublicKey())
+
+		// Should return a HostKeyError
+		if err == nil {
+			t.Fatal("Expected error for changed host key, got nil")
+		}
+
+		hostKeyErr, ok := err.(*HostKeyError)
+		if !ok {
+			t.Fatalf("Expected *HostKeyError, got %T", err)
+		}
+
+		// Verify error contents
+		if !strings.Contains(hostKeyErr.Host, hostname) {
+			t.Errorf("Expected Host to contain '%s', got '%s'", hostname, hostKeyErr.Host)
+		}
+		if hostKeyErr.KeyType != "ssh-ed25519" {
+			t.Errorf("Expected KeyType 'ssh-ed25519', got '%s'", hostKeyErr.KeyType)
+		}
+		if hostKeyErr.KeyFingerprint == "" {
+			t.Error("KeyFingerprint should not be empty")
+		}
+		if hostKeyErr.KnownHostsLine == "" {
+			t.Error("KnownHostsLine should not be empty")
+		}
+
+		// Check error message content
+		errMsg := hostKeyErr.Error()
+		if !strings.Contains(errMsg, "host key has changed") {
+			t.Errorf("Error message should contain 'host key has changed', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "man-in-the-middle") {
+			t.Errorf("Error message should contain 'man-in-the-middle', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, hostKeyErr.KeyType) {
+			t.Errorf("Error message should contain key type, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, hostKeyErr.KeyFingerprint) {
+			t.Errorf("Error message should contain key fingerprint, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, knownHostsPath) {
+			t.Errorf("Error message should contain known_hosts path, got: %s", errMsg)
+		}
+	})
+
+	t.Run("DefaultKnownHostsPath", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		t.Setenv(homeEnvVarName(), tmpHome)
+
+		// Don't set KnownHostsPath — let it default to $HOME/.ssh/known_hosts
+		client := &SFTPClient{
+			config: &Config{
+				IgnoreHostKey: false,
+			},
+		}
+
+		callback, err := client.createHostKeyCallback()
+		if err != nil {
+			t.Fatalf("createHostKeyCallback failed: %v", err)
+		}
+		if callback == nil {
+			t.Fatal("Expected non-nil callback")
+		}
+
+		// Verify .ssh/known_hosts was created
+		knownHostsPath := filepath.Join(tmpHome, ".ssh", "known_hosts")
+		if _, err := os.Stat(knownHostsPath); err != nil {
+			t.Errorf("Expected known_hosts to be created at default path: %v", err)
+		}
+	})
+}
+
+func TestPasswordAuthentication(t *testing.T) {
+	t.Run("PasswordConfigured", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(tmpHome, ".ssh"), 0700); err != nil {
+			t.Fatalf("Failed to create .ssh dir: %v", err)
+		}
+		t.Setenv(homeEnvVarName(), tmpHome)
+		t.Setenv("SSH_AUTH_SOCK", "")
+
+		client := &SFTPClient{config: &Config{
+			Host:          "127.0.0.1",
+			Port:          1, // Closed port — will fail at dial, not at auth assembly
+			User:          "testuser",
+			Password:      "testpass",
+			IgnoreHostKey: true,
+
+			ConnectionRetries:        1,
+			ConnectionRetryBaseDelay: 1,
+		}}
+
+		err := client.Connect()
+		if err == nil {
+			t.Fatal("Expected connection error on closed port")
+		}
+		if strings.Contains(err.Error(), "no SSH authentication methods") {
+			t.Error("password authentication should have been configured")
+		}
+	})
+}
+
+func TestDefaultSSHTimeout(t *testing.T) {
+	t.Run("Value", func(t *testing.T) {
+		// Verify the constant is set correctly
+		if defaultSSHTimeout != 30*time.Second {
+			t.Errorf("Expected defaultSSHTimeout to be 30s, got %v", defaultSSHTimeout)
+		}
+	})
+}
+
+func TestConnectionRetry(t *testing.T) {
+	t.Run("RetryCount", func(t *testing.T) {
+		tests := []struct {
+			retries         int
+			expectedInError string
+		}{
+			{1, "after 1 attempts"},
+			{2, "after 2 attempts"},
+			{3, "after 3 attempts"},
+			{5, "after 5 attempts"},
+		}
+
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%d_retries", tt.retries), func(t *testing.T) {
+				client := &SFTPClient{config: &Config{
+					Host:                     "localhost",
+					Port:                     1, // Closed port
+					User:                     "testuser",
+					Password:                 "testpass",
+					IgnoreHostKey:            true,
+					ConnectionRetries:        tt.retries,
+					ConnectionRetryBaseDelay: 1, // Minimal delay
+				}}
+
+				err := client.Connect()
+				if err == nil {
+					t.Fatal("Expected connection error")
+				}
+
+				if !strings.Contains(err.Error(), tt.expectedInError) {
+					t.Errorf("Expected error to contain %q, got: %v", tt.expectedInError, err)
+				}
+			})
+		}
+	})
+
+	t.Run("FailureErrorMessage", func(t *testing.T) {
+		tests := []struct {
+			name             string
+			host             string
+			port             int
+			expectedContains []string
+		}{
+			{
+				name: "connection_refused",
+				host: "localhost",
+				port: 1, // Closed port
+				expectedContains: []string{
+					"failed to connect to SSH server",
+					"localhost:1",
+					"after",
+					"attempts",
+				},
+			},
+			{
+				name: "invalid_host",
+				host: "this.host.does.not.exist.invalid",
+				port: 22,
+				expectedContains: []string{
+					"failed to connect to SSH server",
+					"this.host.does.not.exist.invalid:22",
+				},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				client := &SFTPClient{config: &Config{
+					Host:                     tt.host,
+					Port:                     tt.port,
+					User:                     "testuser",
+					Password:                 "testpass",
+					IgnoreHostKey:            true,
+					ConnectionRetries:        1,
+					ConnectionRetryBaseDelay: 1,
+				}}
+
+				err := client.Connect()
+				if err == nil {
+					t.Fatal("Expected connection error")
+				}
+
+				errMsg := err.Error()
+				for _, expected := range tt.expectedContains {
+					if !strings.Contains(errMsg, expected) {
+						t.Errorf("Expected error to contain %q, got: %s", expected, errMsg)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("RetryWithBackoff", func(t *testing.T) {
+		tests := []struct {
+			name          string
+			retries       int
+			baseDelayMs   int
+			minExpectedMs int64 // Minimum time based on backoff formula
+			maxExpectedMs int64 // Maximum reasonable time
+		}{
+			{
+				name:          "single retry no delay",
+				retries:       1,
+				baseDelayMs:   100,
+				minExpectedMs: 0,   // No retries = no delay
+				maxExpectedMs: 500, // Just dial time
+			},
+			{
+				name:        "two retries",
+				retries:     2,
+				baseDelayMs: 100,
+				// First attempt fails, delay = 100ms * 2^0 = 100ms, second attempt fails
+				minExpectedMs: 80, // ~100ms with tolerance
+				maxExpectedMs: 500,
+			},
+			{
+				name:        "three retries",
+				retries:     3,
+				baseDelayMs: 50,
+				// delay1 = 50ms, delay2 = 100ms, total = 150ms
+				minExpectedMs: 120,
+				maxExpectedMs: 500,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				client := &SFTPClient{config: &Config{
+					Host:                     "localhost",
+					Port:                     1, // Invalid/closed port
+					User:                     "testuser",
+					Password:                 "testpass",
+					IgnoreHostKey:            true,
+					ConnectionRetries:        tt.retries,
+					ConnectionRetryBaseDelay: tt.baseDelayMs,
+				}}
+
+				start := time.Now()
+				err := client.Connect()
+				elapsed := time.Since(start)
+
+				if err == nil {
+					t.Fatal("Expected connection error")
+				}
+
+				elapsedMs := elapsed.Milliseconds()
+				if elapsedMs < tt.minExpectedMs {
+					t.Errorf("Connection failed too fast (%dms), expected >= %dms; backoff may not be working",
+						elapsedMs, tt.minExpectedMs)
+				}
+				if elapsedMs > tt.maxExpectedMs {
+					t.Errorf("Connection took too long (%dms), expected <= %dms",
+						elapsedMs, tt.maxExpectedMs)
+				}
+			})
+		}
+	})
+
+	t.Run("DefaultRetryValues", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("Skipping default retry test in short mode")
+		}
+
+		// With defaults: 3 retries, 500ms base delay
+		// Delays: 500ms, 1000ms = 1500ms total
+		client := &SFTPClient{config: &Config{
+			Host:          "localhost",
+			Port:          1,
+			User:          "testuser",
+			Password:      "testpass",
+			IgnoreHostKey: true,
+			// ConnectionRetries: 0,        // Use default (3)
+			// ConnectionRetryBaseDelay: 0, // Use default (500ms)
+		}}
+
+		start := time.Now()
+		err := client.Connect()
+		elapsed := time.Since(start)
+
+		if err == nil {
+			t.Fatal("Expected connection error")
+		}
+
+		// With 3 retries and 500ms base:
+		// attempt 0 fails, sleep 500ms
+		// attempt 1 fails, sleep 1000ms
+		// attempt 2 fails, done
+		// Total delay: ~1500ms
+
+		if elapsed < 1400*time.Millisecond {
+			t.Errorf("Default retry backoff seems too fast (%v); expected ~1500ms+", elapsed)
+		}
+
+		// Verify error message says 3 attempts
+		if !strings.Contains(err.Error(), "after 3 attempts") {
+			t.Errorf("Expected default of 3 attempts, error: %v", err)
+		}
+	})
+}
+
+// --- Mock infrastructure for SFTP operation tests ---
+
+type mockFile struct {
+	content  []byte
+	pos      int
+	writeErr error
+	written  []byte
+}
+
+func (f *mockFile) Read(p []byte) (int, error) {
+	if f.pos >= len(f.content) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.content[f.pos:])
+	f.pos += n
+	if f.pos >= len(f.content) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (f *mockFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	f.written = append(f.written, p...)
+	return len(p), nil
+}
+
+func (f *mockFile) Close() error { return nil }
+
+type mockSFTPOps struct {
+	createFn func(path string) (io.ReadWriteCloser, error)
+	openFn   func(path string) (io.ReadCloser, error)
+	statFn   func(path string) (os.FileInfo, error)
+	mkdirFn  func(path string) error
+	chmodFn  func(path string, mode os.FileMode) error
+	removeFn func(path string) error
+	closeFn  func() error
+}
+
+func (m *mockSFTPOps) Create(path string) (io.ReadWriteCloser, error) {
+	if m.createFn != nil {
+		return m.createFn(path)
+	}
+	return nil, fmt.Errorf("Create not configured")
+}
+
+func (m *mockSFTPOps) Open(path string) (io.ReadCloser, error) {
+	if m.openFn != nil {
+		return m.openFn(path)
+	}
+	return nil, fmt.Errorf("Open not configured")
+}
+
+func (m *mockSFTPOps) Stat(path string) (os.FileInfo, error) {
+	if m.statFn != nil {
+		return m.statFn(path)
+	}
+	return nil, fmt.Errorf("Stat not configured")
+}
+
+func (m *mockSFTPOps) Mkdir(path string) error {
+	if m.mkdirFn != nil {
+		return m.mkdirFn(path)
+	}
+	return nil
+}
+
+func (m *mockSFTPOps) Chmod(path string, mode os.FileMode) error {
+	if m.chmodFn != nil {
+		return m.chmodFn(path, mode)
+	}
+	return nil
+}
+
+func (m *mockSFTPOps) Remove(path string) error {
+	if m.removeFn != nil {
+		return m.removeFn(path)
+	}
+	return nil
+}
+
+func (m *mockSFTPOps) Close() error {
+	if m.closeFn != nil {
+		return m.closeFn()
+	}
+	return nil
+}
+
+type mockSSHCloser struct {
+	closeErr error
+	closed   bool
+}
+
+func (m *mockSSHCloser) Close() error {
+	m.closed = true
+	return m.closeErr
+}
+
+type mockFileInfo struct {
+	mode os.FileMode
+	size int64
+}
+
+func (i *mockFileInfo) Name() string       { return "mock" }
+func (i *mockFileInfo) Size() int64        { return i.size }
+func (i *mockFileInfo) Mode() os.FileMode  { return i.mode }
+func (i *mockFileInfo) ModTime() time.Time { return time.Time{} }
+func (i *mockFileInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i *mockFileInfo) Sys() interface{}   { return nil }
+
+type mockConn struct {
+	closed bool
+}
+
+func (c *mockConn) Read([]byte) (int, error)         { return 0, nil }
+func (c *mockConn) Write([]byte) (int, error)        { return 0, nil }
+func (c *mockConn) Close() error                     { c.closed = true; return nil }
+func (c *mockConn) LocalAddr() net.Addr              { return nil }
+func (c *mockConn) RemoteAddr() net.Addr             { return nil }
+func (c *mockConn) SetDeadline(time.Time) error      { return nil }
+func (c *mockConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *mockConn) SetWriteDeadline(time.Time) error { return nil }
+
+// errReader is an io.ReadCloser that always returns an error on Read.
+type errReader struct{}
+
+func (e *errReader) Read([]byte) (int, error) { return 0, fmt.Errorf("read error") }
+func (e *errReader) Close() error             { return nil }
+
+func TestWriteFile(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		var createdPath string
+		var chmodPath string
+		var chmodMode os.FileMode
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+			},
+			createFn: func(path string) (io.ReadWriteCloser, error) {
+				createdPath = path
+				return &mockFile{}, nil
+			},
+			chmodFn: func(path string, mode os.FileMode) error {
+				chmodPath = path
+				chmodMode = mode
+				return nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+		if err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+		if createdPath != "/remote/file.txt" {
+			t.Errorf("Expected Create called with /remote/file.txt, got %s", createdPath)
+		}
+		if chmodPath != "/remote/file.txt" {
+			t.Errorf("Expected Chmod called with /remote/file.txt, got %s", chmodPath)
+		}
+		if chmodMode != 0644 {
+			t.Errorf("Expected Chmod mode 0644, got %04o", chmodMode)
+		}
+	})
+
+	t.Run("DirCreationFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return nil, fmt.Errorf("not found")
+			},
+			mkdirFn: func(path string) error {
+				return fmt.Errorf("mkdir failed")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+		if err == nil {
+			t.Fatal("Expected error when mkdir fails")
+		}
+		if !strings.Contains(err.Error(), "failed to create remote directory") {
+			t.Errorf("Expected dir creation error, got: %v", err)
+		}
+	})
+
+	t.Run("CreateFileFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+			},
+			createFn: func(path string) (io.ReadWriteCloser, error) {
+				return nil, fmt.Errorf("create failed")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+		if err == nil {
+			t.Fatal("Expected error when Create fails")
+		}
+		if !strings.Contains(err.Error(), "failed to create remote file") {
+			t.Errorf("Expected file creation error, got: %v", err)
+		}
+	})
+
+	t.Run("WriteFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+			},
+			createFn: func(path string) (io.ReadWriteCloser, error) {
+				return &mockFile{writeErr: fmt.Errorf("write failed")}, nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+		if err == nil {
+			t.Fatal("Expected error when Write fails")
+		}
+		if !strings.Contains(err.Error(), "failed to write to remote file") {
+			t.Errorf("Expected write error, got: %v", err)
+		}
+	})
+
+	t.Run("ChmodFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+			},
+			createFn: func(path string) (io.ReadWriteCloser, error) {
+				return &mockFile{}, nil
+			},
+			chmodFn: func(path string, mode os.FileMode) error {
+				return fmt.Errorf("chmod failed")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.WriteFile("/remote/file.txt", []byte("hello"), 0644, 0755)
+
+		if err == nil {
+			t.Fatal("Expected error when Chmod fails")
+		}
+		if !strings.Contains(err.Error(), "failed to set permissions on remote file") {
+			t.Errorf("Expected chmod error, got: %v", err)
+		}
+	})
+}
+
+func TestReadFile(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			openFn: func(path string) (io.ReadCloser, error) {
+				return &mockFile{content: []byte("file contents")}, nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		data, err := client.ReadFile("/remote/file.txt")
+
+		if err != nil {
+			t.Fatalf("ReadFile failed: %v", err)
+		}
+		if string(data) != "file contents" {
+			t.Errorf("Expected 'file contents', got %q", string(data))
+		}
+	})
+
+	t.Run("OpenFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			openFn: func(path string) (io.ReadCloser, error) {
+				return nil, fmt.Errorf("no such file")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		_, err := client.ReadFile("/remote/missing.txt")
+
+		if err == nil {
+			t.Fatal("Expected error when Open fails")
+		}
+		if !strings.Contains(err.Error(), "failed to open remote file") {
+			t.Errorf("Expected open error, got: %v", err)
+		}
+	})
+
+	t.Run("ReadFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			openFn: func(path string) (io.ReadCloser, error) {
+				return &errReader{}, nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		_, err := client.ReadFile("/remote/file.txt")
+
+		if err == nil {
+			t.Fatal("Expected error when Read fails")
+		}
+		if !strings.Contains(err.Error(), "failed to read remote file") {
+			t.Errorf("Expected read error, got: %v", err)
+		}
+	})
+}
+
+func TestFileExists(t *testing.T) {
+	t.Run("True", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return &mockFileInfo{}, nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		exists, err := client.FileExists("/remote/file.txt")
+
+		if err != nil {
+			t.Fatalf("FileExists failed: %v", err)
+		}
+		if !exists {
+			t.Error("Expected file to exist")
+		}
+	})
+
+	t.Run("False", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return nil, fmt.Errorf("not found")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		exists, err := client.FileExists("/remote/missing.txt")
+
+		if err != nil {
+			t.Fatalf("FileExists failed: %v", err)
+		}
+		if exists {
+			t.Error("Expected file to not exist")
+		}
+	})
+}
+
+func TestGetFileInfo(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return &mockFileInfo{mode: 0644, size: 1234}, nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		info, err := client.GetFileInfo("/remote/file.txt")
+
+		if err != nil {
+			t.Fatalf("GetFileInfo failed: %v", err)
+		}
+		if info.Mode != 0644 {
+			t.Errorf("Expected mode 0644, got %04o", info.Mode)
+		}
+		if info.Size != 1234 {
+			t.Errorf("Expected size 1234, got %d", info.Size)
+		}
+	})
+
+	t.Run("StatFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return nil, fmt.Errorf("stat failed")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		_, err := client.GetFileInfo("/remote/missing.txt")
+
+		if err == nil {
+			t.Fatal("Expected error when Stat fails")
+		}
+		if !strings.Contains(err.Error(), "failed to stat remote file") {
+			t.Errorf("Expected stat error, got: %v", err)
+		}
+	})
+}
+
+func TestDeleteFile(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		var removedPath string
+		mock := &mockSFTPOps{
+			removeFn: func(path string) error {
+				removedPath = path
+				return nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.DeleteFile("/remote/file.txt")
+
+		if err != nil {
+			t.Fatalf("DeleteFile failed: %v", err)
+		}
+		if removedPath != "/remote/file.txt" {
+			t.Errorf("Expected Remove called with /remote/file.txt, got %s", removedPath)
+		}
+	})
+
+	t.Run("Fails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			removeFn: func(path string) error {
+				return fmt.Errorf("remove failed")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.DeleteFile("/remote/file.txt")
+
+		if err == nil {
+			t.Fatal("Expected error when Remove fails")
+		}
+		if !strings.Contains(err.Error(), "remove failed") {
+			t.Errorf("Expected remove error, got: %v", err)
+		}
+	})
+}
+
+func TestChmod(t *testing.T) {
+	t.Run("Success", func(t *testing.T) {
+		var chmodPath string
+		var chmodMode os.FileMode
+		mock := &mockSFTPOps{
+			chmodFn: func(path string, mode os.FileMode) error {
+				chmodPath = path
+				chmodMode = mode
+				return nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.Chmod("/remote/file.txt", 0755)
+
+		if err != nil {
+			t.Fatalf("Chmod failed: %v", err)
+		}
+		if chmodPath != "/remote/file.txt" {
+			t.Errorf("Expected Chmod path /remote/file.txt, got %s", chmodPath)
+		}
+		if chmodMode != 0755 {
+			t.Errorf("Expected Chmod mode 0755, got %04o", chmodMode)
+		}
+	})
+
+	t.Run("Fails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			chmodFn: func(path string, mode os.FileMode) error {
+				return fmt.Errorf("chmod failed")
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.Chmod("/remote/file.txt", 0755)
+
+		if err == nil {
+			t.Fatal("Expected error when Chmod fails")
+		}
+		if !strings.Contains(err.Error(), "chmod failed") {
+			t.Errorf("Expected chmod error, got: %v", err)
+		}
+	})
+}
+
+func TestMkdirAllWithMode(t *testing.T) {
+	t.Run("CreatesNestedDirs", func(t *testing.T) {
+		var mkdired []string
+		var chmoded []string
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return nil, fmt.Errorf("not found")
+			},
+			mkdirFn: func(path string) error {
+				mkdired = append(mkdired, path)
+				return nil
+			},
+			chmodFn: func(path string, mode os.FileMode) error {
+				chmoded = append(chmoded, path)
+				return nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+		if err != nil {
+			t.Fatalf("mkdirAllWithMode failed: %v", err)
+		}
+		expected := []string{"/a", "/a/b", "/a/b/c"}
+		if len(mkdired) != len(expected) {
+			t.Fatalf("Expected %d mkdir calls, got %d: %v", len(expected), len(mkdired), mkdired)
+		}
+		for i, dir := range expected {
+			if mkdired[i] != dir {
+				t.Errorf("mkdir[%d]: expected %s, got %s", i, dir, mkdired[i])
+			}
+		}
+		if len(chmoded) != len(expected) {
+			t.Fatalf("Expected %d chmod calls, got %d", len(expected), len(chmoded))
+		}
+	})
+
+	t.Run("PartialExists", func(t *testing.T) {
+		var mkdired []string
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				if path == "/a" || path == "/a/b" {
+					return &mockFileInfo{mode: os.ModeDir | 0755}, nil
+				}
+				return nil, fmt.Errorf("not found")
+			},
+			mkdirFn: func(path string) error {
+				mkdired = append(mkdired, path)
+				return nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+		if err != nil {
+			t.Fatalf("mkdirAllWithMode failed: %v", err)
+		}
+		if len(mkdired) != 1 || mkdired[0] != "/a/b/c" {
+			t.Errorf("Expected only /a/b/c to be created, got: %v", mkdired)
+		}
+	})
+
+	t.Run("MkdirFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return nil, fmt.Errorf("not found")
+			},
+			mkdirFn: func(path string) error {
+				return fmt.Errorf("mkdir failed on %s", path)
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+		if err == nil {
+			t.Fatal("Expected error when Mkdir fails")
+		}
+		if !strings.Contains(err.Error(), "mkdir failed") {
+			t.Errorf("Expected mkdir error, got: %v", err)
+		}
+	})
+
+	t.Run("ChmodFails", func(t *testing.T) {
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return nil, fmt.Errorf("not found")
+			},
+			mkdirFn: func(path string) error {
+				return nil
+			},
+			chmodFn: func(path string, mode os.FileMode) error {
+				return fmt.Errorf("chmod failed on %s", path)
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.mkdirAllWithMode("/a/b/c", 0755)
+
+		if err == nil {
+			t.Fatal("Expected error when Chmod fails")
+		}
+		if !strings.Contains(err.Error(), "chmod failed") {
+			t.Errorf("Expected chmod error, got: %v", err)
+		}
+	})
+
+	t.Run("RootPath", func(t *testing.T) {
+		var mkdired []string
+		mock := &mockSFTPOps{
+			mkdirFn: func(path string) error {
+				mkdired = append(mkdired, path)
+				return nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.mkdirAllWithMode("/", 0755)
+
+		if err != nil {
+			t.Fatalf("mkdirAllWithMode for / failed: %v", err)
+		}
+		if len(mkdired) != 0 {
+			t.Errorf("Expected no mkdir calls for root, got: %v", mkdired)
+		}
+	})
+
+	t.Run("RelativePath", func(t *testing.T) {
+		var mkdired []string
+		mock := &mockSFTPOps{
+			statFn: func(path string) (os.FileInfo, error) {
+				return nil, fmt.Errorf("not found")
+			},
+			mkdirFn: func(path string) error {
+				mkdired = append(mkdired, path)
+				return nil
+			},
+		}
+
+		client := &SFTPClient{transferClient: mock}
+		err := client.mkdirAllWithMode("a/b", 0755)
+
+		if err != nil {
+			t.Fatalf("mkdirAllWithMode failed: %v", err)
+		}
+		expected := []string{"a", "a/b"}
+		if len(mkdired) != len(expected) {
+			t.Fatalf("Expected %d mkdir calls, got %d: %v", len(expected), len(mkdired), mkdired)
+		}
+		for i, dir := range expected {
+			if mkdired[i] != dir {
+				t.Errorf("mkdir[%d]: expected %s, got %s", i, dir, mkdired[i])
+			}
+		}
+	})
+}
+
+func TestClose(t *testing.T) {
+	t.Run("AllClients", func(t *testing.T) {
+		sftpMock := &mockSFTPOps{}
+		sshMock := &mockSSHCloser{}
+		agentConn := &mockConn{}
+
+		client := &SFTPClient{
+			transferClient: sftpMock,
+			sshClient:      sshMock,
+			agentConn:      agentConn,
+		}
+
+		err := client.Close()
+
+		if err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+		if !sshMock.closed {
+			t.Error("Expected SSH client to be closed")
+		}
+		if !agentConn.closed {
+			t.Error("Expected agent connection to be closed")
+		}
+		if client.transferClient != nil {
+			t.Error("Expected transferClient to be nil after Close")
+		}
+		if client.sshClient != nil {
+			t.Error("Expected sshClient to be nil after Close")
+		}
+		if client.agentConn != nil {
+			t.Error("Expected agentConn to be nil after Close")
+		}
+	})
+
+	t.Run("OnlySSH", func(t *testing.T) {
+		sshMock := &mockSSHCloser{}
+		client := &SFTPClient{sshClient: sshMock}
+
+		err := client.Close()
+
+		if err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+		if !sshMock.closed {
+			t.Error("Expected SSH client to be closed")
+		}
+	})
+
+	t.Run("NilClients", func(t *testing.T) {
+		client := &SFTPClient{}
+
+		err := client.Close()
+		if err != nil {
+			t.Fatalf("Close with all nil clients failed: %v", err)
+		}
+	})
+
+	t.Run("SSHError", func(t *testing.T) {
+		sshMock := &mockSSHCloser{closeErr: fmt.Errorf("ssh close failed")}
+		client := &SFTPClient{sshClient: sshMock}
+
+		err := client.Close()
+
+		if err == nil {
+			t.Fatal("Expected error from SSH Close")
+		}
+		if err.Error() != "ssh close failed" {
+			t.Errorf("Expected 'ssh close failed', got: %v", err)
+		}
+	})
+}
+
+func TestNewSFTPClient(t *testing.T) {
+	t.Run("AppliesSSHConfig", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config")
+
+		configContent := `Host myhost
+    Hostname actual.host.com
+    User sshuser
+    Port 2222
+    IdentityFile ~/.ssh/mykey
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+			t.Fatalf("Failed to write SSH config: %v", err)
+		}
+
+		config := &Config{
+			Host:          "myhost",
+			SSHConfigPath: configPath,
+		}
+
+		client, err := NewSFTPClient(config)
+		if err != nil {
+			t.Fatalf("NewSFTPClient failed: %v", err)
+		}
+
+		if client.config.Host != "actual.host.com" {
+			t.Errorf("Expected Host 'actual.host.com', got '%s'", client.config.Host)
+		}
+		if client.config.User != "sshuser" {
+			t.Errorf("Expected User 'sshuser', got '%s'", client.config.User)
+		}
+		if client.config.Port != 2222 {
+			t.Errorf("Expected Port 2222, got %d", client.config.Port)
+		}
+	})
+
+	t.Run("NoSSHConfig", func(t *testing.T) {
+		config := &Config{
+			Host:          "example.com",
+			SSHConfigPath: "/nonexistent/path/to/ssh/config",
+			User:          "testuser",
+			Port:          22,
+		}
+
+		client, err := NewSFTPClient(config)
+		if err != nil {
+			t.Fatalf("NewSFTPClient failed: %v", err)
+		}
+
+		// Config should be unchanged since SSH config file doesn't exist
+		if client.config.Host != "example.com" {
+			t.Errorf("Expected Host 'example.com', got '%s'", client.config.Host)
+		}
+		if client.config.User != "testuser" {
+			t.Errorf("Expected User 'testuser', got '%s'", client.config.User)
+		}
+		if client.config.Port != 22 {
+			t.Errorf("Expected Port 22, got %d", client.config.Port)
+		}
+	})
+}
+
+func TestParsePort(t *testing.T) {
+	t.Run("Valid", func(t *testing.T) {
+		port, err := parsePort("22")
+		if err != nil {
+			t.Fatalf("parsePort(\"22\") failed: %v", err)
+		}
+		if port != 22 {
+			t.Errorf("Expected 22, got %d", port)
+		}
+	})
+
+	t.Run("Invalid", func(t *testing.T) {
+		_, err := parsePort("abc")
+		if err == nil {
+			t.Fatal("Expected error for 'abc'")
+		}
+		if !strings.Contains(err.Error(), "invalid port") {
+			t.Errorf("Expected 'invalid port' error, got: %v", err)
+		}
+	})
+
+	t.Run("Empty", func(t *testing.T) {
+		port, err := parsePort("")
+		if err != nil {
+			t.Fatalf("parsePort(\"\") failed: %v", err)
+		}
+		if port != 0 {
+			t.Errorf("Expected 0 for empty string, got %d", port)
+		}
+	})
+
+	t.Run("WithLetters", func(t *testing.T) {
+		_, err := parsePort("22a")
+		if err == nil {
+			t.Fatal("Expected error for '22a'")
+		}
+		if !strings.Contains(err.Error(), "invalid port") {
+			t.Errorf("Expected 'invalid port' error, got: %v", err)
+		}
+	})
+}

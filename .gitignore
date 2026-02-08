@@ -1,9 +1,47 @@
-*.dll
+# Build artifacts
+terraform-provider-scp
+terraform-provider-scp_v*
 *.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Go workspace
+go.work
+go.work.sum
+
+# Terraform artifacts
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.lock.hcl
+
+# IDE artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS artifacts
 .DS_Store
-example.tf
-terraform.tfplan
-terraform.tfstate
+Thumbs.db
+
+# Vendor directory (if not needed)
+# vendor/
+
+# Temp files
+/tmp/
+*.tmp
+*.log
+
+/docs/
 bin/
 dist/
 modules-dev/
@@ -13,17 +51,6 @@ website/.bundle
 website/build
 website/node_modules
 .vagrant/
-*.backup
-./*.tfstate
-.terraform/
-*.log
-*.bak
-*~
-.*.swp
-.idea
-*.iml
-*.test
-*.iml
 
 website/vendor
 
