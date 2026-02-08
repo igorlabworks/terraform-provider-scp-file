@@ -86,86 +86,82 @@ func TestResolveContent(t *testing.T) {
 	})
 }
 
-func TestBuildSchema_NonSensitive(t *testing.T) {
-	base := &scpFileResourceBase{
-		resConfig: scpFileResourceConfig{
-			DefaultFilePermission: "0777",
-			DefaultDirPermission:  "0777",
-			ContentIsSensitive:    false,
-		},
-	}
-	s := base.buildSchema()
+func TestBuildSchema(t *testing.T) {
+	t.Run("NonSensitive", func(t *testing.T) {
+		base := &scpFileResourceBase{
+			resConfig: scpFileResourceConfig{
+				DefaultFilePermission: "0777",
+				DefaultDirPermission:  "0777",
+				ContentIsSensitive:    false,
+			},
+		}
+		s := base.buildSchema()
 
-	// content and content_base64 should NOT be sensitive
-	for _, name := range []string{"content", "content_base64"} {
-		attr, ok := s.Attributes[name].(schema.StringAttribute)
+		for _, name := range []string{"content", "content_base64"} {
+			attr, ok := s.Attributes[name].(schema.StringAttribute)
+			if !ok {
+				t.Fatalf("attribute %q is not a StringAttribute", name)
+			}
+			if attr.Sensitive {
+				t.Errorf("attribute %q should not be sensitive", name)
+			}
+		}
+
+		for _, name := range []string{"file_permission", "directory_permission"} {
+			attr, ok := s.Attributes[name].(schema.StringAttribute)
+			if !ok {
+				t.Fatalf("attribute %q is not a StringAttribute", name)
+			}
+			var defResp defaults.StringResponse
+			attr.Default.DefaultString(context.Background(), defaults.StringRequest{}, &defResp)
+			if defResp.PlanValue.ValueString() != "0777" {
+				t.Errorf("%s default = %q, want %q", name, defResp.PlanValue.ValueString(), "0777")
+			}
+		}
+	})
+
+	t.Run("Sensitive", func(t *testing.T) {
+		base := &scpFileResourceBase{
+			resConfig: scpFileResourceConfig{
+				DefaultFilePermission: "0700",
+				DefaultDirPermission:  "0700",
+				ContentIsSensitive:    true,
+			},
+		}
+		s := base.buildSchema()
+
+		for _, name := range []string{"content", "content_base64"} {
+			attr, ok := s.Attributes[name].(schema.StringAttribute)
+			if !ok {
+				t.Fatalf("attribute %q is not a StringAttribute", name)
+			}
+			if !attr.Sensitive {
+				t.Errorf("attribute %q should be sensitive", name)
+			}
+		}
+
+		sourceAttr, ok := s.Attributes["source"].(schema.StringAttribute)
 		if !ok {
-			t.Fatalf("attribute %q is not a StringAttribute", name)
+			t.Fatal("attribute \"source\" is not a StringAttribute")
 		}
-		if attr.Sensitive {
-			t.Errorf("attribute %q should not be sensitive", name)
+		if sourceAttr.Sensitive {
+			t.Error("attribute \"source\" should not be sensitive")
 		}
-	}
 
-	// Permission defaults should be 0777
-	for _, name := range []string{"file_permission", "directory_permission"} {
-		attr, ok := s.Attributes[name].(schema.StringAttribute)
-		if !ok {
-			t.Fatalf("attribute %q is not a StringAttribute", name)
+		for _, name := range []string{"file_permission", "directory_permission"} {
+			attr, ok := s.Attributes[name].(schema.StringAttribute)
+			if !ok {
+				t.Fatalf("attribute %q is not a StringAttribute", name)
+			}
+			var defResp defaults.StringResponse
+			attr.Default.DefaultString(context.Background(), defaults.StringRequest{}, &defResp)
+			if defResp.PlanValue.ValueString() != "0700" {
+				t.Errorf("%s default = %q, want %q", name, defResp.PlanValue.ValueString(), "0700")
+			}
 		}
-		var defResp defaults.StringResponse
-		attr.Default.DefaultString(context.Background(), defaults.StringRequest{}, &defResp)
-		if defResp.PlanValue.ValueString() != "0777" {
-			t.Errorf("%s default = %q, want %q", name, defResp.PlanValue.ValueString(), "0777")
-		}
-	}
-}
 
-func TestBuildSchema_Sensitive(t *testing.T) {
-	base := &scpFileResourceBase{
-		resConfig: scpFileResourceConfig{
-			DefaultFilePermission: "0700",
-			DefaultDirPermission:  "0700",
-			ContentIsSensitive:    true,
-		},
-	}
-	s := base.buildSchema()
-
-	// content and content_base64 must be sensitive
-	for _, name := range []string{"content", "content_base64"} {
-		attr, ok := s.Attributes[name].(schema.StringAttribute)
-		if !ok {
-			t.Fatalf("attribute %q is not a StringAttribute", name)
+		if s.Description != "Generates a file on a remote host via SCP/SFTP with the given sensitive content." {
+			t.Errorf("schema description = %q, want sensitive variant", s.Description)
 		}
-		if !attr.Sensitive {
-			t.Errorf("attribute %q should be sensitive", name)
-		}
-	}
-
-	// source must NOT be sensitive regardless of config
-	sourceAttr, ok := s.Attributes["source"].(schema.StringAttribute)
-	if !ok {
-		t.Fatal("attribute \"source\" is not a StringAttribute")
-	}
-	if sourceAttr.Sensitive {
-		t.Error("attribute \"source\" should not be sensitive")
-	}
-
-	// Permission defaults should be 0700
-	for _, name := range []string{"file_permission", "directory_permission"} {
-		attr, ok := s.Attributes[name].(schema.StringAttribute)
-		if !ok {
-			t.Fatalf("attribute %q is not a StringAttribute", name)
-		}
-		var defResp defaults.StringResponse
-		attr.Default.DefaultString(context.Background(), defaults.StringRequest{}, &defResp)
-		if defResp.PlanValue.ValueString() != "0700" {
-			t.Errorf("%s default = %q, want %q", name, defResp.PlanValue.ValueString(), "0700")
-		}
-	}
-
-	// Schema description should mention "sensitive"
-	if s.Description != "Generates a file on a remote host via SCP/SFTP with the given sensitive content." {
-		t.Errorf("schema description = %q, want sensitive variant", s.Description)
-	}
+	})
 }
